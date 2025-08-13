@@ -1,6 +1,6 @@
 """
-LLM-powered A2A Nutrition Agent Server
-Enhanced with Google ADK for intelligent nutrition analysis and recommendations.
+LLM-powered A2A Compliance Agent Server
+Enhanced with Google ADK for intelligent regulatory compliance analysis.
 """
 
 import os
@@ -103,47 +103,55 @@ class LLMComplianceAgentExecutor(AgentExecutor):
         )
 
     def _build_llm_agent(self) -> LlmAgent:
-        """Build the LLM agent with nutrition-specific configuration."""
-        logger.info("📝 Creating nutrition-specific system instructions...")
+        """Build the LLM agent with compliance-specific configuration."""
+        logger.info("📝 Creating compliance-specific system instructions...")
 
         instruction = """
-You are a specialized AI nutrition assistant with access to comprehensive food and nutrition data. Your role is to help users understand their nutritional intake, make informed food choices, and achieve their health goals.
+You are a specialized AI regulatory compliance assistant with expertise in analyzing clinical trial protocols and healthcare documents for regulatory compliance. Your role is to identify potential compliance issues with HIPAA, 21 CFR Part 11, Good Clinical Practice (ICH E6), and other healthcare regulations.
 
 CORE CAPABILITIES:
-1. Analyze nutritional content of individual foods and complete meals
-2. Calculate daily nutrition totals and compare against recommended values  
-3. Provide personalized nutrition recommendations
-4. Answer questions about nutrition, health, and dietary choices
-5. Help with meal planning and food substitutions
+1. Analyze documents for regulatory compliance issues
+2. Generate detailed compliance reports with risk scores
+3. Check specific regulations and rules
+4. Provide recommendations for addressing compliance gaps
+5. Explain regulatory requirements and their implications
+
+REGULATORY FRAMEWORKS:
+- HIPAA (Health Insurance Portability and Accountability Act)
+- 21 CFR Part 11 (Electronic Records and Signatures)
+- Good Clinical Practice (ICH E6)
+- FDA IND Requirements
+- IRB Requirements
+- ONC HTI-1 (Data Transparency)
 
 INTERACTION PRINCIPLES:
-- Always be helpful, accurate, and supportive
-- Use the nutrition analysis tools to provide precise data when discussing specific foods
-- Consider the user's dietary restrictions, goals, and preferences
-- Provide context and explanations, not just raw numbers
-- Suggest practical, actionable advice
+- Be thorough and precise in identifying compliance issues
+- Use the compliance analysis tools to scan documents systematically
+- Provide context for each finding with regulatory references
+- Prioritize critical issues that need immediate attention
+- Suggest practical remediation steps
 
 DECISION PROCESS:
-1. If the user asks about specific foods or meals, use the analyze_nutrition or calculate_meal_totals tools
-2. If they want recommendations, use get_nutrition_recommendations after analyzing their current intake
-3. For general nutrition questions, provide evidence-based information
-4. Always explain the nutritional significance of the data you provide
+1. When given a document or protocol text, use analyze_compliance to check all frameworks
+2. For formatted output, use generate_compliance_report with appropriate format (text/json)
+3. For specific regulation checks, use check_specific_regulation
+4. Always explain the significance and potential impact of findings
 
 RESPONSE STYLE:
-- Be conversational and engaging
-- Break down complex nutritional information into understandable terms
-- Use specific numbers from your analysis tools when relevant
-- Provide actionable next steps or suggestions
-- Ask clarifying questions if needed to give better advice
+- Be professional and authoritative
+- Use clear regulatory terminology
+- Provide specific regulatory citations when relevant
+- Organize findings by severity (CRITICAL > VIOLATION > WARNING)
+- Include actionable recommendations
 
-IMPORTANT: Always use the available tools when analyzing specific foods or calculating nutritional values. Don't estimate or guess nutritional information when you have tools available to provide accurate data.
+IMPORTANT: Always use the compliance analysis tools when reviewing documents. The tools check for patterns that indicate regulatory violations across multiple frameworks. Provide comprehensive analysis covering all applicable regulations.
 """
 
-        logger.info("🛠️ Registering nutrition analysis tools...")
+        logger.info("🛠️ Registering compliance analysis tools...")
         function_tools = [
-            analyze_nutrition,
-            calculate_meal_totals,
-            get_nutrition_recommendations,
+            analyze_compliance,
+            generate_compliance_report,
+            check_specific_regulation,
         ]
         logger.info(
             f"📋 Raw functions registered: {[tool.__name__ for tool in function_tools]}"
@@ -157,8 +165,8 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
         logger.info("🔨 Creating LlmAgent instance...")
         agent = LlmAgent(
             model=self._model,
-            name="ai_nutrition_assistant",
-            description="AI-powered nutrition analysis and meal planning assistant with access to comprehensive food database",
+            name="ai_compliance_validator",
+            description="AI-powered regulatory compliance validator for clinical trials and healthcare documentation",
             instruction=instruction,
             tools=tools,
         )
@@ -212,7 +220,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
 
             if not user_message.strip():
                 logger.warning(f"❌ [{request_id}] Empty user message received")
-                response_msg = "Please provide a nutrition-related question or food description to analyze."
+                response_msg = "Please provide a clinical trial protocol or healthcare document text to analyze for compliance."
                 logger.info(
                     f"📤 [{request_id}] Sending empty message response: {response_msg}"
                 )
@@ -364,7 +372,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
             )
             logger.error(f"🔍 [{request_id}] Exception type: {type(e).__name__}")
             error_message = (
-                f"An error occurred while processing your nutrition query: {str(e)}"
+                f"An error occurred while processing your compliance analysis: {str(e)}"
             )
             logger.info(
                 f"📤 [{request_id}] Sending error message to client: {error_message[:100]}..."
@@ -374,7 +382,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
 
     async def cancel(self, request: RequestContext, event_queue: EventQueue) -> None:
         """Cancel the current request."""
-        logger.info("🛑 Cancellation request received for nutrition agent")
+        logger.info("🛑 Cancellation request received for compliance agent")
         logger.warning(
             "⚠️ Cancel operation not supported - raising UnsupportedOperationError"
         )
@@ -658,19 +666,22 @@ app = A2AStarletteApplication(
 logger.info("✅ A2A Starlette application built successfully")
 logger.info("🎯 Application ready for deployment")
 
-# Add explicit agent card endpoint
+# Add explicit agent card endpoints using Starlette routing
 from starlette.responses import JSONResponse
+from starlette.routing import Route
 import json
 
-@app.get("/.well-known/agent.json")
-async def get_agent_card():
+async def get_agent_card(request):
     """Return the agent card as JSON."""
     return JSONResponse(agent_card.model_dump())
 
-@app.get("/.well-known/agent-card.json")
-async def get_agent_card_alt():
+async def get_agent_card_alt(request):
     """Alternative endpoint for agent card (A2A standard)."""
     return JSONResponse(agent_card.model_dump())
+
+# Add routes to the existing app
+app.routes.append(Route("/.well-known/agent.json", get_agent_card))
+app.routes.append(Route("/.well-known/agent-card.json", get_agent_card_alt))
 
 logger.info("📋 Agent card endpoints configured:")
 logger.info("   • /.well-known/agent.json (primary)")
