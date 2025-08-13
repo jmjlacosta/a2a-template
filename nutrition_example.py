@@ -666,27 +666,6 @@ app = A2AStarletteApplication(
 logger.info("✅ A2A Starlette application built successfully")
 logger.info("🎯 Application ready for deployment")
 
-# Add explicit agent card endpoints using Starlette routing
-from starlette.responses import JSONResponse
-from starlette.routing import Route
-import json
-
-async def get_agent_card(request):
-    """Return the agent card as JSON."""
-    return JSONResponse(agent_card.model_dump())
-
-async def get_agent_card_alt(request):
-    """Alternative endpoint for agent card (A2A standard)."""
-    return JSONResponse(agent_card.model_dump())
-
-# Add routes to the existing app
-app.routes.append(Route("/.well-known/agent.json", get_agent_card))
-app.routes.append(Route("/.well-known/agent-card.json", get_agent_card_alt))
-
-logger.info("📋 Agent card endpoints configured:")
-logger.info("   • /.well-known/agent.json (primary)")
-logger.info("   • /.well-known/agent-card.json (A2A standard)")
-
 if __name__ == "__main__":
     logger.info("🚀 Starting LLM-powered AI Regulatory Compliance Validator")
     logger.info("🤖 Enhanced with Google ADK for intelligent compliance analysis")
