@@ -457,11 +457,12 @@ logging.basicConfig(
 
 The template ensures full A2A v0.3.0 compliance:
 
-1. **Well-known endpoint**: `/.well-known/agentcard.json`
-2. **Health endpoint**: `/health`
-3. **JSONRPC endpoint**: `/` (POST)
-4. **Protocol version**: "0.3.0"
-5. **Message format**: Proper Task/Message/Part structure
+1. **A2A spec endpoint**: `/.well-known/agent-card.json`
+2. **HealthUniverse endpoint**: `/.well-known/agent.json`
+3. **Health endpoint**: `/health`
+4. **JSONRPC endpoint**: `/` (POST)
+5. **Protocol version**: "0.3.0"
+6. **Message format**: Proper Task/Message/Part structure
 
 ### Required AgentCard Fields
 

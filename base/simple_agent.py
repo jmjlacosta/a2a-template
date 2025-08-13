@@ -226,7 +226,8 @@ class BaseAgentExecutor(AgentExecutor, ABC):
         # Run server
         logger.info(f"🚀 Starting {self.get_agent_name()} on {host}:{port}")
         logger.info(f"📍 Agent URL: {self.agent_url}")
-        logger.info(f"🔗 Well-known endpoint: {self.agent_url}/.well-known/agentcard.json")
+        logger.info(f"🔗 A2A endpoint: {self.agent_url}/.well-known/agent-card.json")
+        logger.info(f"🔗 HU endpoint: {self.agent_url}/.well-known/agent.json")
         logger.info(f"💚 Health endpoint: {self.agent_url}/health")
         uvicorn.run(app, host=host, port=port)
     

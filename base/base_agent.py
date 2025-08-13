@@ -106,14 +106,27 @@ class BaseLLMAgentExecutor(AgentExecutor, ABC):
             
             # Create runner with services for session management
             logger.info("🏃 Creating runner with session management services...")
+            self._session_service = InMemorySessionService()
             self._runner = Runner(
                 app_name=self._agent.name,
                 agent=self._agent,
                 artifact_service=InMemoryArtifactService(),
-                session_service=InMemorySessionService(),
+                session_service=self._session_service,
                 memory_service=InMemoryMemoryService(),
             )
             logger.info("📝 Session management services initialized")
+            
+            # Create a default session for the agent
+            self._default_session_id = f"agent_session_{self._agent.name.replace(' ', '_').lower()}"
+            self._default_user_id = "default_user"
+            
+            # Initialize the session using the synchronous method
+            self._session_service.create_session_sync(
+                app_name=self._agent.name,
+                user_id=self._default_user_id,
+                session_id=self._default_session_id
+            )
+            logger.info(f"✅ Created default session: {self._default_session_id}")
         else:
             logger.info("🔌 Running in non-LLM mode")
         
@@ -365,14 +378,26 @@ class BaseLLMAgentExecutor(AgentExecutor, ABC):
                 accumulated_response = ""
                 
                 try:
-                    # Create streaming generator
-                    async for chunk in self._runner.stream(
-                        prompt=user_message,
-                        user_id=self._user_id,
-                        session_id=session_id,
+                    # Create Content message for the runner
+                    from google.adk.runners import types
+                    text_part = types.Part(text=user_message)
+                    message = types.Content(parts=[text_part], role="user")
+                    
+                    # Use run_async which actually exists
+                    async for event in self._runner.run_async(
+                        user_id=self._default_user_id,
+                        session_id=self._default_session_id,
+                        new_message=message,
                     ):
                         chunk_count += 1
                         has_updates = True
+                        
+                        # Extract text from event
+                        chunk = ""
+                        if hasattr(event, 'text'):
+                            chunk = event.text
+                        elif hasattr(event, 'content') and hasattr(event.content, 'text'):
+                            chunk = event.content.text
                         
                         # Accumulate response
                         if chunk:
@@ -514,7 +539,8 @@ class BaseLLMAgentExecutor(AgentExecutor, ABC):
         # Run server
         logger.info(f"🚀 Starting {self.get_agent_name()} on {host}:{port}")
         logger.info(f"📍 Agent URL: {self.agent_url}")
-        logger.info(f"🔗 Well-known endpoint: {self.agent_url}/.well-known/agentcard.json")
+        logger.info(f"🔗 A2A endpoint: {self.agent_url}/.well-known/agent-card.json")
+        logger.info(f"🔗 HU endpoint: {self.agent_url}/.well-known/agent.json")
         logger.info(f"💚 Health endpoint: {self.agent_url}/health")
         uvicorn.run(app, host=host, port=port)
     

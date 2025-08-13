@@ -19,6 +19,7 @@ import json
 import re
 import os
 import logging
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -46,6 +47,8 @@ class RegulatoryFramework(Enum):
     HIPAA = "HIPAA"
     CFR_PART_11 = "21 CFR Part 11"
     IRB = "IRB"
+    GCP = "Good Clinical Practice (ICH E6)"
+    FDA_IND = "FDA IND Requirements"
     ONC_HTI_1 = "ONC HTI-1"
 
 
@@ -85,6 +88,20 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
     def __init__(self):
         super().__init__()
         self.compliance_rules = self._initialize_compliance_rules()
+        
+        # Use the session created by the base class if available
+        if hasattr(self, '_default_session_id'):
+            self.session_id = self._default_session_id
+            self.user_id = self._default_user_id
+        else:
+            # Fallback if base class doesn't create session
+            self.session_id = "compliance_session"
+            self.user_id = "compliance_user"
+        
+        # Rate limiting settings
+        self.llm_call_delay = 0.5  # Delay between LLM calls in seconds
+        self.max_concurrent_llm_calls = 3  # Maximum concurrent LLM calls
+        self.llm_semaphore = asyncio.Semaphore(self.max_concurrent_llm_calls)
         
     def get_agent_name(self) -> str:
         return "AI Regulatory Compliance Validator"
@@ -128,118 +145,154 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
         return {
             RegulatoryFramework.HIPAA: [
                 {
-                    "category": "PHI Protection",
-                    "pattern": r"(patient|participant|subject)\s+(identif|name|SSN|social security|date of birth|DOB|address|phone|email|medical record)",
-                    "requirement": "HIPAA requires de-identification of PHI using Safe Harbor (removing 18 identifiers) or Expert Determination",
-                    "check_prompt": "Does this text indicate proper de-identification of Protected Health Information (PHI) according to HIPAA Safe Harbor requirements?"
+                    "category": "PHI De-identification",
+                    "pattern": r"(patient|participant|subject)\s+(identif|name|SSN|social security|date of birth|DOB|address|phone|email|medical record|MRN|IP address|device identifier|biometric)",
+                    "requirement": "HIPAA requires de-identification using Safe Harbor (removing 18 identifiers) or Expert Determination per 45 CFR 164.514(b)",
+                    "check_prompt": "Does this text indicate proper de-identification of PHI? Look for: 1) Safe Harbor method removing all 18 identifiers, 2) Expert Determination with statistician certification, or 3) Improper handling of identifiers."
+                },
+                {
+                    "category": "Business Associate Agreement",
+                    "pattern": r"(business associate|BAA|third.?party|vendor|contractor|service provider|cloud|SaaS|data processor)",
+                    "requirement": "HIPAA requires Business Associate Agreements (BAAs) with all third parties handling PHI per 45 CFR 164.504(e)",
+                    "check_prompt": "Does this text properly address Business Associate Agreement requirements for third parties handling PHI?"
+                },
+                {
+                    "category": "Research Authorization",
+                    "pattern": r"(research authorization|waiver of authorization|IRB.?approved waiver|limited data set|data use agreement|DUA)",
+                    "requirement": "Research use of PHI requires either: 1) Individual authorization per 45 CFR 164.508, 2) IRB-approved waiver per 164.512(i), or 3) Limited data set with DUA per 164.514(e)",
+                    "check_prompt": "Does this text properly describe research authorization methods (individual authorization, IRB waiver, or limited data set with DUA)?"
                 },
                 {
                     "category": "Data Security",
-                    "pattern": r"(encrypt|cryptograph|secure|protect|password|authentication|access control)",
-                    "requirement": "HIPAA Security Rule requires encryption for PHI at rest (AES-256) and in transit (TLS 1.2+)",
-                    "check_prompt": "Does this text demonstrate appropriate encryption and security measures for PHI as required by HIPAA Security Rule?"
+                    "pattern": r"(encrypt(?:ion|ed|ing)|AES.?256|TLS.?1\.[2-3]|SSL|data.?at.?rest|data.?in.?transit|password.?(?:protect|encrypt|policy)|multi.?factor.?auth|role.?based.?access.?control|RBAC)",
+                    "requirement": "HIPAA Security Rule requires encryption for PHI at rest (AES-256) and in transit (TLS 1.2+), plus access controls per 45 CFR 164.312",
+                    "check_prompt": "Does this text demonstrate HIPAA-compliant encryption (AES-256 at rest, TLS 1.2+ in transit) and access controls?"
                 },
                 {
                     "category": "Audit Controls",
-                    "pattern": r"(audit|log|track|monitor|record access|activity log)",
-                    "requirement": "HIPAA requires audit logs tracking who accessed PHI, when, and what actions were taken",
-                    "check_prompt": "Does this text show proper audit logging and monitoring as required by HIPAA?"
+                    "pattern": r"(audit.?(?:trail|log|control)|access.?log(?:ging)?|activity.?(?:monitoring|logging)|security.?audit|log.?review.?(?:procedure|process)|unauthorized.?access.?detection|security.?incident.?(?:log|response))",
+                    "requirement": "HIPAA requires audit logs per 45 CFR 164.312(b) tracking: user ID, date/time, action performed, patient ID affected",
+                    "check_prompt": "Does this text show HIPAA-compliant audit logging with user ID, timestamp, action, and affected records?"
                 },
                 {
-                    "category": "Authorization",
-                    "pattern": r"(consent|authorization|permission|waiver|opt-in|opt-out)",
-                    "requirement": "HIPAA requires written authorization for use/disclosure of PHI for research",
-                    "check_prompt": "Does this text indicate proper HIPAA authorization or consent procedures?"
-                },
-                {
-                    "category": "Breach Response",
-                    "pattern": r"(breach|incident|unauthorized|disclosure|notification|security event)",
-                    "requirement": "HIPAA Breach Notification Rule requires notification within 60 days",
-                    "check_prompt": "Does this text show adequate breach notification procedures per HIPAA requirements?"
+                    "category": "Breach Notification",
+                    "pattern": r"(breach|data breach|unauthorized disclosure|breach notification|60.?day|500.?affected|HHS notification|media notification)",
+                    "requirement": "HIPAA Breach Notification Rule requires: individual notice within 60 days, HHS notice within 60 days, media notice if >500 affected per 45 CFR 164.404-410",
+                    "check_prompt": "Does this text properly address HIPAA breach notification timelines (60 days individual/HHS, immediate if >500)?"
                 },
                 {
                     "category": "Minimum Necessary",
-                    "pattern": r"(minimum necessary|data minimization|need to know|limited data set)",
-                    "requirement": "HIPAA Minimum Necessary standard limits PHI use to minimum needed",
-                    "check_prompt": "Does this text demonstrate compliance with HIPAA's Minimum Necessary standard?"
+                    "pattern": r"(minimum necessary|role.?based access|need.?to.?know|data minimization|limited data set|restrict)",
+                    "requirement": "HIPAA Minimum Necessary standard per 45 CFR 164.502(b) requires limiting PHI access/use/disclosure to minimum needed",
+                    "check_prompt": "Does this text demonstrate the Minimum Necessary principle with role-based access and data minimization?"
+                },
+                {
+                    "category": "Training Requirements",
+                    "pattern": r"(HIPAA training|privacy training|security training|workforce training|annual training|onboarding)",
+                    "requirement": "HIPAA requires training all workforce members on privacy/security policies per 45 CFR 164.530(b)",
+                    "check_prompt": "Does this text address HIPAA training requirements for all workforce members?"
                 }
             ],
             
             RegulatoryFramework.CFR_PART_11: [
                 {
-                    "category": "Electronic Records",
-                    "pattern": r"(electronic record|e-record|digital document|EDC|electronic data)",
-                    "requirement": "21 CFR Part 11 requires validation, audit trails, and record retention for electronic records",
-                    "check_prompt": "Does this text show proper controls for electronic records per 21 CFR Part 11?"
+                    "category": "System Validation",
+                    "pattern": r"((?:computer.?)?system.?validation|CSV.?(?:protocol|documentation)|IQ[/\s]OQ[/\s]PQ|installation.?qualification|operational.?qualification|performance.?qualification|validation.?protocol|21.?CFR.?Part.?11)",
+                    "requirement": "21 CFR Part 11.10(a) requires system validation including documented IQ (Installation Qualification), OQ (Operational Qualification), and PQ (Performance Qualification)",
+                    "check_prompt": "Does this text show proper system validation with IQ/OQ/PQ documentation? Look for validation protocols, test scripts, and qualification reports."
                 },
                 {
                     "category": "Audit Trail",
-                    "pattern": r"(audit trail|change history|version control|modification log|track changes)",
-                    "requirement": "21 CFR Part 11 requires secure, computer-generated, time-stamped audit trails",
-                    "check_prompt": "Does this text indicate compliant audit trails per 21 CFR Part 11 requirements?"
+                    "pattern": r"(audit.?trail|electronic.?audit|change.?history|version.?control.?system|modification.?tracking|who.?what.?when.?where|time.?stamp(?:ed|ing)|computer.?generated.?(?:audit|log)|secure.?(?:electronic.?)?record)",
+                    "requirement": "21 CFR Part 11.10(e) requires secure, computer-generated, time-stamped audit trails that capture: user ID, date/time, old value, new value, reason for change. Must be retained for record lifetime + 2 years",
+                    "check_prompt": "Does this text describe Part 11 compliant audit trails? Check for: computer-generated, time-stamped, user identification, change tracking, and proper retention."
                 },
                 {
                     "category": "Electronic Signatures",
-                    "pattern": r"(electronic signature|e-signature|digital signature|signed electronically)",
-                    "requirement": "21 CFR Part 11 requires e-signatures to include printed name, date/time, and meaning",
-                    "check_prompt": "Does this text show proper electronic signature implementation per 21 CFR Part 11?"
-                },
-                {
-                    "category": "System Validation",
-                    "pattern": r"(validation|qualification|IQ|OQ|PQ|validated system|21 CFR)",
-                    "requirement": "21 CFR Part 11 requires documented system validation (IQ/OQ/PQ)",
-                    "check_prompt": "Does this text demonstrate proper system validation per 21 CFR Part 11?"
+                    "pattern": r"(electronic signature|e.?signature|digital signature|signature manifestation|signed electronically|signature meaning|non.?repudiation)",
+                    "requirement": "21 CFR Part 11.50 requires e-signatures to include: printed name of signer, date/time of signature, meaning of signature (review, approval, responsibility)",
+                    "check_prompt": "Does this text show compliant electronic signatures with name, date/time, and meaning? Check for signature manifestation requirements."
                 },
                 {
                     "category": "Access Controls",
-                    "pattern": r"(access control|user authentication|password|biometric|role-based)",
-                    "requirement": "21 CFR Part 11 requires access controls and user authentication",
-                    "check_prompt": "Does this text show adequate access controls per 21 CFR Part 11?"
+                    "pattern": r"((?:system.?)?access.?control|user.?authentication|unique.?user.?(?:ID|identification)|password.?(?:policy|requirement|complexity)|biometric.?(?:authentication|access)|two.?factor.?auth|session.?(?:lock|timeout)|automatic.?logoff|authority.?check)",
+                    "requirement": "21 CFR Part 11.10(d) requires limiting system access to authorized individuals with unique user ID/password combinations, automatic logoff, and authority checks",
+                    "check_prompt": "Does this text demonstrate Part 11 access controls? Look for unique user IDs, authentication methods, and authority checks."
                 },
                 {
-                    "category": "Data Integrity",
-                    "pattern": r"(data integrity|backup|recovery|archive|retention|ALCOA)",
-                    "requirement": "21 CFR Part 11 requires data integrity and retention procedures",
-                    "check_prompt": "Does this text demonstrate proper data integrity controls per 21 CFR Part 11?"
+                    "category": "Data Integrity ALCOA+",
+                    "pattern": r"(data.?integrity.?(?:principle|requirement|ALCOA)|ALCOA\+?|(?:data.?is.?)?attributable|(?:data.?is.?)?legible|(?:data.?is.?)?contemporaneous|(?:data.?is.?)?original|(?:data.?is.?)?accurate|(?:data.?is.?)?complete|(?:data.?is.?)?consistent|(?:data.?is.?)?enduring)",
+                    "requirement": "21 CFR Part 11 requires data integrity following ALCOA+ principles: Attributable, Legible, Contemporaneous, Original, Accurate, Complete, Consistent, Enduring, Available",
+                    "check_prompt": "Does this text address ALCOA+ data integrity principles? Check each principle is properly implemented."
+                },
+                {
+                    "category": "Backup and Recovery",
+                    "pattern": r"(backup|disaster recovery|business continuity|data recovery|archive|retention period|record retention|restore procedure)",
+                    "requirement": "21 CFR Part 11.10(c) requires protection of records with backup and accurate/ready retrieval throughout retention period",
+                    "check_prompt": "Does this text describe adequate backup, recovery, and retention procedures for electronic records?"
+                },
+                {
+                    "category": "Training Records",
+                    "pattern": r"(training record|user training|system training|Part 11 training|qualification|competency|training documentation)",
+                    "requirement": "21 CFR Part 11.10(i) requires documented training of personnel using the system including developers, users, and IT support",
+                    "check_prompt": "Does this text show proper training documentation for all system users as required by Part 11?"
+                },
+                {
+                    "category": "Change Control",
+                    "pattern": r"(change control|change management|version control|configuration management|change request|impact assessment|regression testing)",
+                    "requirement": "21 CFR Part 11.10(k) requires formal change control procedures with documentation of changes, testing, and approval",
+                    "check_prompt": "Does this text describe Part 11 compliant change control procedures with proper documentation and testing?"
                 }
             ],
             
             RegulatoryFramework.IRB: [
                 {
-                    "category": "Informed Consent",
-                    "pattern": r"(informed consent|consent form|participant consent|subject consent)",
-                    "requirement": "45 CFR 46.116 requires 8 basic and 6 additional elements in informed consent",
-                    "check_prompt": "Does this text show proper informed consent procedures per IRB requirements?"
+                    "category": "Informed Consent Elements",
+                    "pattern": r"(informed consent|consent form|voluntary participation|withdrawal|consent process|consent documentation|eConsent|electronic consent)",
+                    "requirement": "45 CFR 46.116 requires 8 basic elements: (1) research statement, (2) risks, (3) benefits, (4) alternatives, (5) confidentiality, (6) compensation/injury treatment, (7) contacts, (8) voluntary participation/withdrawal rights",
+                    "check_prompt": "Does this text properly address all 8 required informed consent elements including voluntary participation and withdrawal rights?"
                 },
                 {
-                    "category": "Risk Assessment",
-                    "pattern": r"(risk|benefit|adverse event|safety|harm|minimal risk)",
-                    "requirement": "IRB requires thorough risk-benefit assessment per 45 CFR 46.111",
-                    "check_prompt": "Does this text demonstrate adequate risk assessment and mitigation?"
+                    "category": "Risk-Benefit Assessment",
+                    "pattern": r"(risk.?benefit|risk assessment|minimal risk|greater than minimal|adverse event|serious adverse event|SAE|risk mitigation|safety assessment)",
+                    "requirement": "45 CFR 46.111(a)(2) requires risks be minimized and reasonable in relation to anticipated benefits. Greater-than-minimal-risk studies need enhanced monitoring",
+                    "check_prompt": "Does this text show proper risk categorization (minimal vs greater-than-minimal) and benefit justification?"
                 },
                 {
-                    "category": "Vulnerable Populations",
-                    "pattern": r"(children|minor|pregnant|prisoner|vulnerable|impaired|elderly)",
-                    "requirement": "45 CFR 46 Subparts B-D require additional protections for vulnerable populations",
-                    "check_prompt": "Does this text show proper protections for vulnerable populations?"
+                    "category": "Vulnerable Populations Protections",
+                    "pattern": r"(children|pediatric|minor|pregnant women|fetus|prisoner|incarcerated|cognitive impairment|diminished capacity|economically disadvantaged|educationally disadvantaged|vulnerable)",
+                    "requirement": "45 CFR 46 Subparts B (pregnant women/fetuses), C (prisoners), D (children) require additional safeguards, assent procedures, and special consent considerations",
+                    "check_prompt": "Does this text demonstrate appropriate additional protections for vulnerable populations per Subparts B, C, or D?"
                 },
                 {
-                    "category": "Protocol Review",
-                    "pattern": r"(protocol|study design|research plan|methodology|IRB approval)",
-                    "requirement": "IRB must review and approve all research protocols",
-                    "check_prompt": "Does this text indicate proper IRB review and approval processes?"
+                    "category": "IRB Review Types",
+                    "pattern": r"(IRB review|full board|expedited review|exempt|continuing review|annual review|protocol amendment|modification|deviation|violation)",
+                    "requirement": "45 CFR 46.109 specifies review types: Exempt (46.104), Expedited (46.110), or Full Board. Continuing review required annually unless exempt",
+                    "check_prompt": "Does this text correctly identify the IRB review type and continuing review requirements?"
                 },
                 {
-                    "category": "Safety Monitoring",
-                    "pattern": r"(DSMB|data safety|monitoring|stopping rules|safety committee)",
-                    "requirement": "IRB requires data safety monitoring plans for higher-risk studies",
-                    "check_prompt": "Does this text show adequate safety monitoring procedures?"
+                    "category": "Data Safety Monitoring",
+                    "pattern": r"(DSMB|DSMC|Data Safety Monitoring|safety monitoring plan|stopping rules|interim analysis|futility|efficacy boundary|safety boundary|unblinding)",
+                    "requirement": "FDA and NIH require DSMBs for Phase III trials and high-risk studies. Must define stopping rules for safety, efficacy, and futility with unblinding procedures",
+                    "check_prompt": "Does this text describe adequate DSMB charter, stopping rules, and unblinding procedures for safety monitoring?"
                 },
                 {
-                    "category": "Confidentiality",
-                    "pattern": r"(confidential|privacy|anonymous|de-identified|coded)",
-                    "requirement": "IRB requires protection of participant confidentiality",
-                    "check_prompt": "Does this text demonstrate proper confidentiality protections?"
+                    "category": "Confidentiality and Privacy",
+                    "pattern": r"(confidentiality|privacy protection|de.?identification|coded data|anonymous|Certificate of Confidentiality|CoC|data breach|re.?identification risk)",
+                    "requirement": "45 CFR 46.111(a)(7) requires adequate privacy/confidentiality provisions. NIH-funded studies may require Certificate of Confidentiality per 21st Century Cures Act",
+                    "check_prompt": "Does this text show proper confidentiality measures including de-identification methods and Certificate of Confidentiality if applicable?"
+                },
+                {
+                    "category": "Adverse Event Reporting",
+                    "pattern": r"(adverse event|AE|serious adverse event|SAE|unanticipated problem|reportable event|FDA reporting|sponsor notification|IRB reporting)",
+                    "requirement": "45 CFR 46.103(b)(5) requires prompt reporting of unanticipated problems. SAEs require reporting within 24-72 hours to IRB, FDA (if IND), and sponsor",
+                    "check_prompt": "Does this text specify proper AE/SAE reporting timelines to IRB (immediate for deaths, 24-72h for SAEs)?"
+                },
+                {
+                    "category": "Protocol Compliance",
+                    "pattern": r"(protocol deviation|protocol violation|non.?compliance|corrective action|preventive action|CAPA|root cause analysis)",
+                    "requirement": "IRB requires reporting of major deviations within 10 days, minor deviations at continuing review. Repeated deviations require CAPA plan",
+                    "check_prompt": "Does this text properly distinguish major vs minor deviations and describe corrective action plans?"
                 }
             ],
             
@@ -274,40 +327,207 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
                     "requirement": "ONC HTI-1 prohibits information blocking except for specific exceptions",
                     "check_prompt": "Does this text indicate any information blocking practices?"
                 }
+            ],
+            
+            RegulatoryFramework.GCP: [
+                {
+                    "category": "Protocol Compliance",
+                    "pattern": r"(protocol adherence|protocol compliance|GCP compliance|ICH.?E6|good clinical practice|protocol training|investigator responsibilities)",
+                    "requirement": "ICH E6 Section 4.5 requires investigators to comply with the protocol, only make changes to eliminate immediate hazards, and document/report all deviations",
+                    "check_prompt": "Does this text demonstrate GCP protocol compliance including deviation documentation and investigator responsibilities?"
+                },
+                {
+                    "category": "Source Documentation",
+                    "pattern": r"(source document|source data|primary record|medical record|case report form|CRF|eCRF|source data verification|SDV)",
+                    "requirement": "ICH E6 Section 4.9.0 requires source documents be accurate, complete, and verifiable. All CRF entries must be traceable to source",
+                    "check_prompt": "Does this text show proper source documentation practices with traceability between source docs and CRFs?"
+                },
+                {
+                    "category": "Essential Documents",
+                    "pattern": r"(essential document|regulatory binder|trial master file|TMF|investigator site file|ISF|document retention|archival)",
+                    "requirement": "ICH E6 Section 8 lists essential documents for TMF/ISF. Must be retained for 2 years after marketing approval or trial discontinuation",
+                    "check_prompt": "Does this text properly address essential document management and retention requirements per ICH E6 Section 8?"
+                },
+                {
+                    "category": "Investigational Product Management",
+                    "pattern": r"(investigational product|study drug|drug accountability|dispensing log|temperature log|chain of custody|storage condition|expiry|randomization)",
+                    "requirement": "ICH E6 Section 4.6 requires documented receipt, storage, dispensing, return, and destruction of investigational products with temperature monitoring",
+                    "check_prompt": "Does this text show proper investigational product accountability including storage conditions and chain of custody?"
+                },
+                {
+                    "category": "Clinical Trial Monitoring",
+                    "pattern": r"(monitoring visit|site visit|monitoring plan|monitoring report|100% SDV|risk.?based monitoring|RBM|central monitoring|on.?site monitoring)",
+                    "requirement": "ICH E6 Section 5.18 requires monitoring per written plan. FDA supports risk-based monitoring per 2013 guidance. Must verify source data, protocol compliance, and GCP adherence",
+                    "check_prompt": "Does this text describe adequate monitoring procedures including frequency, scope, and risk-based approach?"
+                },
+                {
+                    "category": "Sponsor Responsibilities",
+                    "pattern": r"(sponsor responsibility|sponsor oversight|clinical trial agreement|CTA|delegation log|supervision|medical monitor|safety reporting to sites)",
+                    "requirement": "ICH E6 Section 5 defines sponsor responsibilities including trial oversight, safety reporting to sites within 24h for SUSARs, and maintaining quality management system",
+                    "check_prompt": "Does this text properly address sponsor oversight responsibilities including safety reporting and quality management?"
+                },
+                {
+                    "category": "Investigator Qualifications",
+                    "pattern": r"(investigator qualification|CV|curriculum vitae|medical license|GCP training|financial disclosure|FDA 1572|delegation of authority)",
+                    "requirement": "ICH E6 Section 4.1 requires investigators be qualified by education, training, and experience. Must maintain current CV, licenses, GCP training certificates, and FDA 1572",
+                    "check_prompt": "Does this text demonstrate proper investigator qualifications including CV, training, and regulatory documents?"
+                },
+                {
+                    "category": "Quality Management System",
+                    "pattern": r"(quality management|QMS|quality assurance|quality control|audit trail|CAPA|corrective action|preventive action|risk assessment|critical process)",
+                    "requirement": "ICH E6(R2) Section 5.0 requires sponsors implement quality management system with risk-based approach focusing on critical processes and data",
+                    "check_prompt": "Does this text show implementation of quality management system with risk-based approach per ICH E6(R2)?"
+                }
+            ],
+            
+            RegulatoryFramework.FDA_IND: [
+                {
+                    "category": "IND Submission Requirements",
+                    "pattern": r"(IND application|investigational new drug|Form FDA 1571|IND submission|pre.?IND meeting|Type [A-D] meeting|initial IND|IND amendment)",
+                    "requirement": "21 CFR 312.23 requires IND contain: FDA 1571, protocol, investigator's brochure, chemistry/manufacturing info, pharmacology/toxicology data, and prior human experience",
+                    "check_prompt": "Does this text properly address IND submission requirements including all required components per 21 CFR 312.23?"
+                },
+                {
+                    "category": "IND Safety Reporting",
+                    "pattern": r"(IND safety report|7.?day report|15.?day report|SUSAR|suspected unexpected serious adverse reaction|expedited report|annual report|DSUR)",
+                    "requirement": "21 CFR 312.32 requires: 7-day reports for fatal/life-threatening SUSARs, 15-day reports for other serious unexpected AEs, annual reports with safety summary",
+                    "check_prompt": "Does this text correctly specify IND safety reporting timelines (7-day, 15-day, annual) per 21 CFR 312.32?"
+                },
+                {
+                    "category": "Protocol Amendments",
+                    "pattern": r"(protocol amendment|substantial amendment|IND amendment|protocol change|new investigator|new site|protocol modification|30.?day safety)",
+                    "requirement": "21 CFR 312.30 requires protocol amendments be submitted before implementation except for immediate safety changes. New protocols have 30-day FDA review period",
+                    "check_prompt": "Does this text properly describe protocol amendment procedures including 30-day review period for new protocols?"
+                },
+                {
+                    "category": "Clinical Hold",
+                    "pattern": r"(clinical hold|partial hold|full hold|FDA hold|study suspension|enrollment suspension|hold letter|hold response|hold removal)",
+                    "requirement": "21 CFR 312.42 allows FDA to impose clinical hold for safety or compliance issues. Sponsor must respond within 30 days with corrective action plan",
+                    "check_prompt": "Does this text address clinical hold procedures including 30-day response requirement and corrective actions?"
+                },
+                {
+                    "category": "Investigator Responsibilities",
+                    "pattern": r"(FDA Form 1572|investigator statement|investigator agreement|investigator commitment|site qualification|investigator IND|investigator.?initiated)",
+                    "requirement": "21 CFR 312.60 requires investigators sign FDA 1572 committing to: conduct per protocol, personally supervise, ensure informed consent, report AEs, maintain records",
+                    "check_prompt": "Does this text show proper investigator commitments per FDA 1572 including supervision and reporting requirements?"
+                },
+                {
+                    "category": "Record Retention",
+                    "pattern": r"(record retention|document retention|2.?year|retention period|FDA inspection|record availability|archived records)",
+                    "requirement": "21 CFR 312.57 requires retention of records for 2 years after marketing application approval or 2 years after discontinuation and FDA notification",
+                    "check_prompt": "Does this text specify proper IND record retention periods (2 years) per 21 CFR 312.57?"
+                },
+                {
+                    "category": "Drug Manufacturing",
+                    "pattern": r"(drug manufacturing|GMP|CMC|chemistry manufacturing controls|stability|impurities|specifications|batch record|Certificate of Analysis|CoA)",
+                    "requirement": "21 CFR 312.23(a)(7) requires CMC information including manufacturing, stability data, and controls. Must follow GMP per 21 CFR 210/211 for Phase 3",
+                    "check_prompt": "Does this text address drug manufacturing requirements including GMP compliance and CMC documentation?"
+                },
+                {
+                    "category": "FDA Inspections",
+                    "pattern": r"(FDA inspection|BIMO|bioresearch monitoring|Form FDA 483|inspection readiness|FDA audit|regulatory inspection|establishment inspection report|EIR)",
+                    "requirement": "21 CFR 312.58 requires immediate access to records during FDA inspection. Form 483 observations require written response within 15 business days",
+                    "check_prompt": "Does this text demonstrate FDA inspection readiness including immediate record access and 483 response procedures?"
+                }
             ]
         }
     
-    def _extract_context(self, text: str, match_start: int, match_end: int, context_chars: int = 200) -> str:
-        """Extract meaningful context around a pattern match."""
-        # Find sentence boundaries
-        sentences = re.split(r'[.!?]\s+', text)
+    def _is_medical_context(self, context: str) -> bool:
+        """Check if the context is clearly medical/clinical rather than IT/compliance."""
+        medical_indicators = [
+            'blood pressure', 'heart rate', 'temperature', 'vital signs',
+            'clinical trial', 'patient care', 'medical record review',
+            'dose', 'medication', 'treatment', 'therapy',
+            'adverse event', 'diagnosis', 'symptom',
+            'quality control assurance', 'clinical monitoring',
+            'participant', 'enrollment', 'randomized'
+        ]
         
-        # Find which sentence(s) contain the match
+        context_lower = context.lower()
+        
+        # Check for medical context indicators
+        for indicator in medical_indicators:
+            if indicator in context_lower:
+                # But still process if it mentions specific compliance terms
+                compliance_terms = ['encrypt', 'audit trail', 'electronic signature', 
+                                  '21 cfr', 'hipaa', 'validation protocol']
+                if any(term in context_lower for term in compliance_terms):
+                    return False  # It's compliance-related despite medical context
+                return True  # It's medical context
+        
+        return False  # Not obviously medical
+    
+    def _extract_context(self, text: str, match_start: int, match_end: int, context_chars: int = 500) -> str:
+        """Extract meaningful context around a pattern match - full paragraphs when possible."""
+        # Try to find paragraph boundaries first
+        paragraphs = text.split('\n\n')
+        
+        # Find which paragraph(s) contain the match
         current_pos = 0
-        relevant_sentences = []
+        relevant_content = []
         
-        for sentence in sentences:
-            sentence_end = current_pos + len(sentence) + 1
+        for para in paragraphs:
+            para_end = current_pos + len(para) + 2  # +2 for the \n\n
             
-            # Check if this sentence overlaps with the match
-            if (current_pos <= match_start <= sentence_end) or \
-               (current_pos <= match_end <= sentence_end) or \
-               (match_start <= current_pos and sentence_end <= match_end):
-                relevant_sentences.append(sentence.strip())
+            # Check if this paragraph contains or overlaps with the match
+            if (current_pos <= match_start <= para_end) or \
+               (current_pos <= match_end <= para_end) or \
+               (match_start <= current_pos and para_end <= match_end):
+                # Include the whole paragraph
+                relevant_content.append(para.strip())
             
-            current_pos = sentence_end
+            current_pos = para_end
         
-        # If we found relevant sentences, use them
-        if relevant_sentences:
-            context = '. '.join(relevant_sentences)
+        # If we found relevant paragraphs, use them
+        if relevant_content:
+            context = ' '.join(relevant_content)
         else:
-            # Fallback to character-based extraction
-            start = max(0, match_start - context_chars)
-            end = min(len(text), match_end + context_chars)
-            context = text[start:end].strip()
+            # Fallback to sentence extraction
+            sentences = re.split(r'[.!?]\s+', text)
+            current_pos = 0
+            relevant_sentences = []
+            
+            for i, sentence in enumerate(sentences):
+                sentence_end = current_pos + len(sentence) + 1
+                
+                # Check if this sentence overlaps with the match
+                if (current_pos <= match_start <= sentence_end) or \
+                   (current_pos <= match_end <= sentence_end) or \
+                   (match_start <= current_pos and sentence_end <= match_end):
+                    # Add previous sentence for context if available
+                    if i > 0 and sentences[i-1] not in relevant_sentences:
+                        relevant_sentences.append(sentences[i-1].strip())
+                    # Add current sentence
+                    relevant_sentences.append(sentence.strip())
+                    # Add next sentence for context if available
+                    if i < len(sentences) - 1:
+                        relevant_sentences.append(sentences[i+1].strip())
+                
+                current_pos = sentence_end
+            
+            if relevant_sentences:
+                context = '. '.join(relevant_sentences)
+            else:
+                # Final fallback to character-based extraction with larger window
+                start = max(0, match_start - context_chars)
+                end = min(len(text), match_end + context_chars)
+                context = text[start:end].strip()
+        
+        # Look for section headers before the match
+        header_pattern = r'^(?:\d+\.?\d*\s+)?[A-Z][A-Za-z\s]+:?\s*$'
+        lines_before = text[:match_start].split('\n')[-5:]  # Check last 5 lines before match
+        for line in lines_before:
+            if re.match(header_pattern, line.strip()) and len(line.strip()) < 100:
+                context = f"[Section: {line.strip()}] {context}"
+                break
         
         # Clean up the context
         context = ' '.join(context.split())  # Normalize whitespace
+        
+        # Ensure we don't exceed reasonable length
+        if len(context) > 1500:
+            # Truncate but keep the matched portion in the middle
+            context = context[:750] + " [...] " + context[-750:]
         
         return context
     
@@ -325,74 +545,155 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
         Returns:
             Tuple of (compliance_level, analysis_explanation, confidence_score)
         """
-        prompt = f"""
-        Regulatory Framework: {framework.value}
-        Category: {category}
-        Requirement: {requirement}
+        # Add small delay to prevent overwhelming the API
+        await asyncio.sleep(0.1)
         
-        Text to Analyze:
-        "{context}"
-        
-        Question: {check_prompt}
-        
-        Analyze this text and determine:
-        1. Compliance Level: Is this COMPLIANT, WARNING, VIOLATION, or CRITICAL?
-        2. Explanation: Why did you make this determination?
-        3. Confidence: How confident are you (0.0 to 1.0)?
-        
-        Consider:
-        - Does the text explicitly state compliance or non-compliance?
-        - Are there safeguards mentioned?
-        - Is this just mentioning a topic vs. describing actual practices?
-        - Would this pass a regulatory audit?
-        
-        Respond in JSON format:
-        {{
-            "level": "COMPLIANT|WARNING|VIOLATION|CRITICAL",
-            "explanation": "Brief explanation of your determination",
-            "confidence": 0.0-1.0,
-            "specific_concern": "The specific issue if any",
-            "passes_audit": true/false
-        }}
-        """
+        prompt = f"""You are a regulatory compliance expert analyzing clinical trial documentation for regulatory adherence.
+
+TASK: Analyze the provided text excerpt for compliance with {framework.value} requirements.
+
+REGULATORY CONTEXT:
+- Framework: {framework.value}
+- Category: {category}
+- Specific Requirement: {requirement}
+
+TEXT UNDER REVIEW:
+"{context}"
+
+ANALYSIS QUESTION:
+{check_prompt}
+
+EVALUATION CRITERIA:
+1. COMPLIANT - Text demonstrates full compliance with requirements
+2. WARNING - Minor issues or unclear compliance status
+3. VIOLATION - Clear non-compliance that needs correction
+4. CRITICAL - Severe violation requiring immediate action
+
+IMPORTANT CONSIDERATIONS:
+- Distinguish between mentioning a concept vs. implementing it
+- Look for specific safeguards, procedures, or controls described
+- Consider if this would satisfy an FDA/regulatory audit
+- Assess completeness of the implementation described
+
+EXAMPLES OF ANALYSIS:
+
+Example 1 - COMPLIANT:
+Text: "All patient data is encrypted using AES-256 at rest and TLS 1.3 in transit. Access logs are automatically generated capturing user ID, timestamp, action performed, and patient records accessed."
+Analysis: Specific encryption standards meet HIPAA requirements, audit logging captures all required elements.
+
+Example 2 - VIOLATION:
+Text: "We plan to implement encryption for sensitive data in the next phase."
+Analysis: Current state lacks required encryption, future plans don't satisfy current compliance needs.
+
+Example 3 - WARNING:
+Text: "Data security measures are in place following industry standards."
+Analysis: Vague statement without specific details about encryption methods or standards used.
+
+RESPOND WITH THIS EXACT JSON STRUCTURE:
+{{
+    "level": "COMPLIANT" or "WARNING" or "VIOLATION" or "CRITICAL",
+    "explanation": "Clear, specific explanation referencing the requirement and what was found or missing",
+    "confidence": 0.0 to 1.0 (use 0.9+ only when very clear, 0.7-0.8 for typical cases, 0.5-0.6 when uncertain),
+    "specific_concern": "The exact compliance gap if any, or null if compliant",
+    "passes_audit": true or false
+}}
+
+Provide ONLY the JSON response, no additional text."""
         
         try:
-            # Use the LLM agent through runner
+            # Use the runner with proper session management
             if self._runner and self._agent:
-                # Use Google ADK's LLM through the runner
                 from google.adk.runners import types
                 
-                session_id = f"compliance_check_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                
-                # Create proper Content message with parts
+                # Create proper Content message
                 text_part = types.Part(text=prompt)
                 message = types.Content(parts=[text_part], role="user")
                 
-                # Use run_async for non-streaming response
+                # Ensure session exists
+                if hasattr(self, '_session_service'):
+                    try:
+                        # Try to create session if it doesn't exist
+                        await self._session_service.create_session(
+                            app_name=self.get_agent_name(),
+                            user_id=self.user_id,
+                            session_id=self.session_id
+                        )
+                    except Exception:
+                        # Session might already exist, that's OK
+                        pass
+                
+                # Use run_async with the session
                 response_text = ""
                 async for event in self._runner.run_async(
-                    user_id="compliance_validator",
-                    session_id=session_id,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
                     new_message=message,
                 ):
+                    # Extract text from event
                     if hasattr(event, 'text'):
                         response_text += event.text
-                    elif hasattr(event, 'content') and hasattr(event.content, 'text'):
-                        response_text += event.content.text
+                    elif hasattr(event, 'content'):
+                        # Handle Content object with parts
+                        content = event.content
+                        if hasattr(content, 'parts'):
+                            for part in content.parts:
+                                if hasattr(part, 'text'):
+                                    response_text += part.text
+                        elif hasattr(content, 'text'):
+                            response_text += content.text
             else:
                 # Fallback if no LLM is configured
                 logger.warning("No LLM configured, using pattern-based analysis only")
                 return ComplianceLevel.WARNING, "LLM not available - pattern-based analysis only", 0.5
             
-            # Parse the JSON response
-            # Handle potential JSON extraction from the response
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            # Parse the JSON response with improved debugging
+            logger.debug(f"LLM response length: {len(response_text)} chars")
+            logger.debug(f"Framework: {framework.value}, Category: {category}")
+            
+            if not response_text:
+                logger.error("LLM returned empty response")
+                logger.debug(f"Prompt was: {prompt[:500]}...")
+                logger.debug(f"Context being analyzed: {context[:200]}...")
+                # Return low confidence so it gets filtered out
+                return ComplianceLevel.WARNING, "LLM returned empty response - skipping", 0.2
+            
+            # Log first 500 chars for debugging
+            logger.debug(f"LLM raw response: {response_text[:500]}{'...' if len(response_text) > 500 else ''}")
+            
+            # Try to extract JSON from the response
+            # First try to find a complete JSON object
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
+            
+            if not json_match:
+                # Try more aggressive JSON extraction
+                logger.warning("No JSON object found with initial regex, trying broader search")
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            
             if json_match:
-                result = json.loads(json_match.group())
+                json_str = json_match.group()
+                logger.debug(f"Extracted JSON string: {json_str[:300]}{'...' if len(json_str) > 300 else ''}")
+                
+                try:
+                    result = json.loads(json_str)
+                    logger.info(f"Successfully parsed LLM response - Level: {result.get('level', 'N/A')}, Confidence: {result.get('confidence', 'N/A')}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error: {e}")
+                    logger.error(f"Failed to parse: {json_str[:500]}")
+                    logger.debug(f"JSON error position: {e.pos if hasattr(e, 'pos') else 'unknown'}")
+                    
+                    # Try to clean common issues
+                    cleaned = json_str.replace('\n', ' ').replace('  ', ' ')
+                    try:
+                        result = json.loads(cleaned)
+                        logger.info("Successfully parsed after cleaning whitespace")
+                    except:
+                        return ComplianceLevel.WARNING, f"JSON parsing failed: {str(e)}", 0.5
             else:
-                # Fallback parsing if JSON not found
-                logger.warning(f"Could not parse JSON from LLM response: {response_text[:200]}")
-                return ComplianceLevel.WARNING, "Unable to fully analyze - manual review recommended", 0.5
+                # Log the full response for debugging when JSON extraction fails
+                logger.error(f"No JSON found in LLM response")
+                logger.error(f"Full response (first 1000 chars): {response_text[:1000]}")
+                logger.debug(f"Prompt that generated this response: {prompt[:500]}...")
+                return ComplianceLevel.WARNING, "Unable to extract structured response - manual review recommended", 0.5
             
             # Map the level
             level_map = {
@@ -423,8 +724,12 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
         framework: RegulatoryFramework
     ) -> List[ComplianceIssue]:
         """Analyze text for compliance issues using pattern matching + LLM analysis."""
+        logger.info(f"Starting compliance analysis for {framework.value}")
+        logger.debug(f"Text length: {len(text)} characters")
+        
         issues = []
         rules = self.compliance_rules[framework]
+        logger.info(f"Checking {len(rules)} rules for {framework.value}")
         
         # Track what we've already analyzed to avoid duplicates
         analyzed_contexts = set()
@@ -432,6 +737,9 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
         for rule in rules:
             pattern = rule["pattern"]
             matches = list(re.finditer(pattern, text, re.IGNORECASE))
+            
+            if matches:
+                logger.debug(f"Found {len(matches)} matches for {rule['category']} pattern")
             
             for match in matches:
                 # Extract context
@@ -442,6 +750,11 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
                 if context_hash in analyzed_contexts:
                     continue
                 analyzed_contexts.add(context_hash)
+                
+                # Skip obvious medical contexts that aren't compliance-related
+                if self._is_medical_context(context):
+                    logger.debug(f"Skipping medical context for {rule['category']}: {context[:100]}...")
+                    continue
                 
                 # Use LLM to analyze the context
                 level, ai_analysis, confidence = await self._analyze_with_llm(

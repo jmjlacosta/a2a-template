@@ -39,12 +39,12 @@ def create_compliant_app(
     # Add compliance endpoints
     
     async def well_known_agent_card(request):
-        """Serve agent card at well-known URI."""
+        """Serve agent card at A2A spec well-known URI."""
         # Use by_alias=True to get camelCase field names as required by A2A spec
         return JSONResponse(agent_card.model_dump(by_alias=True))
     
-    async def well_known_agent_card_alt(request):
-        """Serve agent card at alternate well-known URI."""
+    async def well_known_agent(request):
+        """Serve agent card at HealthUniverse expected URI."""
         # Use by_alias=True to get camelCase field names as required by A2A spec
         return JSONResponse(agent_card.model_dump(by_alias=True))
     
@@ -63,8 +63,8 @@ def create_compliant_app(
     
     # Add routes to the app
     additional_routes = [
-        Route("/.well-known/agentcard.json", well_known_agent_card, methods=["GET"]),
-        Route("/.well-known/agent-card.json", well_known_agent_card_alt, methods=["GET"]),
+        Route("/.well-known/agent-card.json", well_known_agent_card, methods=["GET"]),  # A2A spec compliant
+        Route("/.well-known/agent.json", well_known_agent, methods=["GET"]),  # HealthUniverse expected
         Route("/health", health_check, methods=["GET"]),
     ]
     
