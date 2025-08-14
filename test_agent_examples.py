@@ -6,11 +6,11 @@ Run this file to see both simple and LLM-powered agents in action.
 
 import asyncio
 import os
-from base import BaseAgentExecutor, BaseLLMAgentExecutor
+from base import A2AAgent
 from typing import List, Any
 
 
-class SimpleEchoAgent(BaseAgentExecutor):
+class SimpleEchoAgent(A2AAgent):
     """Minimal A2A-compliant agent that echoes messages."""
     
     def get_agent_name(self) -> str:
@@ -24,8 +24,12 @@ class SimpleEchoAgent(BaseAgentExecutor):
         return f"Echo: {message}"
 
 
-class LLMAssistantAgent(BaseLLMAgentExecutor):
+class LLMAssistantAgent(A2AAgent):
     """LLM-powered agent with tool capabilities."""
+    
+    def __init__(self):
+        super().__init__()
+        self._llm = None
     
     def get_agent_name(self) -> str:
         return "LLM Assistant"
@@ -36,18 +40,21 @@ class LLMAssistantAgent(BaseLLMAgentExecutor):
     def get_system_instruction(self) -> str:
         return """You are a helpful AI assistant. Be concise and helpful."""
     
-    def get_tools(self) -> List[Any]:
-        """Return list of available tools."""
-        # Import FunctionTool only if Google ADK is available
+    async def process_message(self, message: str) -> str:
+        """Process message using LLM."""
+        # Get LLM client with automatic provider detection
+        if self._llm is None:
+            self._llm = self.get_llm_client()
+            
+            if self._llm is None:
+                return "No LLM API key configured. Please set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
+        
+        # Generate response
         try:
-            from google.adk.tools import FunctionTool
-            return [
-                FunctionTool(self._calculate),
-                FunctionTool(self._get_time)
-            ]
-        except ImportError:
-            # Return empty list if Google ADK not available
-            return []
+            response = self._llm.generate_text(message)
+            return response
+        except Exception as e:
+            return f"Error: {str(e)}"
     
     def _calculate(self, expression: str) -> str:
         """Evaluate a mathematical expression.

@@ -31,8 +31,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from base import A2AAgent
-from google.adk import get_llm
-from google.adk.tools import FunctionTool
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -44,8 +42,6 @@ class DocumentAnalyzerAgent(A2AAgent):
     def __init__(self):
         super().__init__()
         self._llm = None
-        self._tools = None
-        self._initialize_tools()
     
     def get_agent_name(self) -> str:
         return "Document Analyzer"
@@ -53,20 +49,9 @@ class DocumentAnalyzerAgent(A2AAgent):
     def get_agent_description(self) -> str:
         return "Analyzes documents with chunking, keyword extraction, and summarization"
     
-    def _initialize_tools(self):
-        """Initialize document analysis tools."""
-        self._tools = [
-            FunctionTool(self._extract_chunks),
-            FunctionTool(self._find_keywords),
-            FunctionTool(self._analyze_structure),
-            FunctionTool(self._extract_entities)
-        ]
-    
-    async def process_message(self, message: str) -> str:
-        """Process document analysis request using LLM with tools."""
-        # Initialize LLM if needed
-        if self._llm is None:
-            system_instruction = """You are a document analysis expert specialized in:
+    def get_system_instruction(self) -> str:
+        """Return system instruction for document analysis."""
+        return """You are a document analysis expert specialized in:
         
 1. Document Structure Analysis
    - Identify sections, headers, and paragraphs
@@ -82,18 +67,40 @@ class DocumentAnalyzerAgent(A2AAgent):
    - Highlight important points
    - Preserve critical information
 
-Use the available tools to process documents effectively.
 Be precise and thorough in your analysis."""
+    
+    async def process_message(self, message: str) -> str:
+        """Process document analysis request using LLM."""
+        # Get LLM client with automatic provider detection
+        if self._llm is None:
+            self._llm = self.get_llm_client()
             
-            self._llm = get_llm(system_instruction=system_instruction)
+            if self._llm is None:
+                return "No LLM API key configured. Please set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
         
-        # Generate response with tools
-        response = self._llm.generate_text(
-            prompt=message,
-            tools=self._tools
-        )
+        # Analyze the document with context about available tools
+        enhanced_prompt = f"""Analyze the following document/text:
+
+{message}
+
+Please provide:
+1. Document structure analysis (type, sections, organization)
+2. Key information extraction (facts, figures, main points)
+3. A concise summary
+4. Any notable patterns or insights
+
+For demonstration, here are some analysis results:
+- Chunks: {self._extract_chunks(message, chunk_size=200)[:500]}...
+- Keywords: {self._find_keywords(message)[:300]}...
+- Structure: {self._analyze_structure(message)[:300]}...
+"""
         
-        return response
+        # Generate response
+        try:
+            response = self._llm.generate_text(enhanced_prompt)
+            return response
+        except Exception as e:
+            return f"Error analyzing document: {str(e)}"
     
     def _extract_chunks(self, text: str, chunk_size: int = 500) -> str:
         """Split text into semantic chunks.

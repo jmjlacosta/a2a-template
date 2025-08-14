@@ -17,18 +17,12 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 
-# Try to import FunctionTool, handle if ADK not installed
+# Check if ADK is available for advanced features
 try:
-    from google.adk import get_llm
     from google.adk.tools import FunctionTool
     ADK_AVAILABLE = True
 except ImportError:
     ADK_AVAILABLE = False
-    get_llm = None
-    # Create a mock FunctionTool for testing without ADK
-    class FunctionTool:
-        def __init__(self, func):
-            self.func = func
 
 
 class TestAssistant(A2AAgent):
@@ -37,9 +31,6 @@ class TestAssistant(A2AAgent):
     def __init__(self):
         super().__init__()
         self._llm = None
-        self._tools = None
-        if ADK_AVAILABLE:
-            self._initialize_tools()
     
     def get_agent_name(self) -> str:
         return "Test Assistant"
@@ -47,39 +38,44 @@ class TestAssistant(A2AAgent):
     def get_agent_description(self) -> str:
         return "A test AI assistant that can get time and perform calculations"
     
-    def _initialize_tools(self):
-        """Initialize tools if ADK is available."""
-        self._tools = [
-            FunctionTool(self._get_current_time),
-            FunctionTool(self._calculate)
-        ]
+    def get_system_instruction(self) -> str:
+        """Return system instruction for test assistant."""
+        return """You are a helpful AI assistant for testing.
+        You can help with current time, calculations, and general questions.
+        Be concise and friendly in your responses."""
     
     async def process_message(self, message: str) -> str:
-        """Process message using LLM if available, otherwise echo."""
-        if ADK_AVAILABLE and get_llm:
-            # Initialize LLM if needed
-            if self._llm is None:
-                system_instruction = """You are a helpful AI assistant for testing.
-                You can get the current time and perform calculations.
-                Be concise and friendly in your responses."""
-                
-                try:
-                    self._llm = get_llm(system_instruction=system_instruction)
-                except Exception as e:
-                    return f"LLM initialization failed: {e}. Falling back to echo mode.\nEcho: {message}"
+        """Process message using automatically detected LLM."""
+        # Get LLM client with automatic provider detection
+        if self._llm is None:
+            self._llm = self.get_llm_client()
             
-            # Generate response with tools
-            try:
-                if self._tools:
-                    response = self._llm.generate_text(prompt=message, tools=self._tools)
-                else:
-                    response = self._llm.generate_text(prompt=message)
-                return response
-            except Exception as e:
-                return f"LLM error: {e}. Message received: {message}"
-        else:
-            # Fallback to echo mode if no LLM
-            return f"Test Echo (no LLM): {message}"
+            if self._llm is None:
+                # Fallback to echo mode if no LLM
+                return f"Test Echo (no LLM configured): {message}"
+        
+        # Add simple tool simulation
+        enhanced_message = message
+        message_lower = message.lower()
+        
+        if 'time' in message_lower or 'date' in message_lower:
+            current_time = self._get_current_time()
+            enhanced_message += f"\n[Current time: {current_time}]"
+        
+        if 'calculate' in message_lower or any(op in message for op in ['+', '-', '*', '/']):
+            # Try to extract and calculate
+            import re
+            math_match = re.search(r'[\d\+\-\*/\(\)\s]+', message)
+            if math_match:
+                result = self._calculate(math_match.group())
+                enhanced_message += f"\n[Calculation result: {result}]"
+        
+        # Generate response
+        try:
+            response = self._llm.generate_text(enhanced_message)
+            return response
+        except Exception as e:
+            return f"LLM error: {e}. Message received: {message}"
     
     def _get_current_time(self) -> str:
         """Get current date and time."""

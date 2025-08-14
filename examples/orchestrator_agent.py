@@ -34,8 +34,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from base import A2AAgent
 from utils.a2a_client import A2AAgentClient, AgentRegistry
-from google.adk import get_llm
-from google.adk.tools import FunctionTool
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -60,38 +58,43 @@ class OrchestratorAgent(A2AAgent):
         return "Orchestrates multiple specialized agents to handle complex tasks"
     
     def _initialize_tools(self):
-        """Initialize orchestration tools."""
-        tools = []
-        
-        # Create a tool for each registered agent
-        for agent_name in self.available_agents:
-            tools.append(self._create_agent_tool(agent_name))
-        
-        # Add orchestration-specific tools
-        tools.extend([
-            FunctionTool(self._parallel_execute),
-            FunctionTool(self._sequential_execute),
-            FunctionTool(self._combine_results)
-        ])
-        
-        self._tools = tools
+        """Initialize orchestration tools - placeholder for now."""
+        # In a real implementation, you would register tools here
+        pass
     
     async def process_message(self, message: str) -> str:
-        """Process orchestration request using LLM with agent tools."""
-        # Initialize LLM if needed
+        """Process orchestration request using LLM."""
+        # Get LLM client with automatic provider detection
         if self._llm is None:
-            system_instruction = self._get_system_instruction()
-            self._llm = get_llm(system_instruction=system_instruction)
+            self._llm = self.get_llm_client()
+            
+            if self._llm is None:
+                return "No LLM API key configured. Please set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
         
-        # Generate response with tools
-        response = self._llm.generate_text(
-            prompt=message,
-            tools=self._tools
-        )
+        # Create enhanced prompt with agent info
+        agents_info = "\n".join([
+            f"- {name}: {info.get('description', 'No description')}"
+            for name, info in self.available_agents.items()
+        ])
         
-        return response
+        enhanced_prompt = f"""As an orchestrator, you coordinate multiple specialized agents.
+
+Available agents:
+{agents_info if agents_info else '- No agents configured'}
+
+User request: {message}
+
+Please explain how you would coordinate the agents to handle this request.
+Note: In a full implementation, you would actually call these agents."""
+        
+        # Generate response
+        try:
+            response = self._llm.generate_text(enhanced_prompt)
+            return response
+        except Exception as e:
+            return f"Error in orchestration: {str(e)}"
     
-    def _get_system_instruction(self) -> str:
+    def get_system_instruction(self) -> str:
         agents_list = "\n".join([
             f"- {name}: {info.get('description', 'No description')}"
             for name, info in self.available_agents.items()

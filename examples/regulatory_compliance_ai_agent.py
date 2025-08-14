@@ -30,7 +30,6 @@ from enum import Enum
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from base import A2AAgent
-from google.adk import get_llm
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -115,29 +114,25 @@ class RegulatoryComplianceAIAgent(A2AAgent):
             "detailed compliance reports with risk assessments and recommendations."
         )
     
-    def _get_llm(self):
-        """Initialize LLM if needed."""
-        if self._llm is None:
-            system_instruction = """You are an expert regulatory compliance analyst specializing in healthcare 
-            and clinical trials. Your role is to analyze text excerpts and determine if they 
-            represent actual regulatory violations or compliance issues.
-            
-            You have deep knowledge of:
-            - HIPAA Privacy and Security Rules
-            - 21 CFR Part 11 (Electronic Records and Signatures)
-            - IRB requirements and human subjects protection
-            - ONC HTI-1 transparency and interoperability requirements
-            
-            When analyzing text, consider:
-            1. The specific regulatory requirement
-            2. Whether the text indicates compliance, non-compliance, or is neutral
-            3. The severity of any violation (critical, violation, warning, or compliant)
-            4. Context clues that indicate proper safeguards or lack thereof
-            
-            Be precise and avoid false positives. Only flag actual violations or clear risks."""
-            
-            self._llm = get_llm(system_instruction=system_instruction)
-        return self._llm
+    def get_system_instruction(self) -> str:
+        """Return system instruction for compliance analysis."""
+        return """You are an expert regulatory compliance analyst specializing in healthcare 
+        and clinical trials. Your role is to analyze text excerpts and determine if they 
+        represent actual regulatory violations or compliance issues.
+        
+        You have deep knowledge of:
+        - HIPAA Privacy and Security Rules
+        - 21 CFR Part 11 (Electronic Records and Signatures)
+        - IRB requirements and human subjects protection
+        - ONC HTI-1 transparency and interoperability requirements
+        
+        When analyzing text, consider:
+        1. The specific regulatory requirement
+        2. Whether the text indicates compliance, non-compliance, or is neutral
+        3. The severity of any violation (critical, violation, warning, or compliant)
+        4. Context clues that indicate proper safeguards or lack thereof
+        
+        Be precise and avoid false positives. Only flag actual violations or clear risks."""
     
     def _initialize_compliance_rules(self) -> Dict[RegulatoryFramework, List[Dict[str, Any]]]:
         """Initialize comprehensive compliance rules for each framework."""
@@ -601,10 +596,14 @@ Provide ONLY the JSON response, no additional text."""
         
         try:
             # Get or initialize LLM
-            llm = self._get_llm()
+            if self._llm is None:
+                self._llm = self.get_llm_client()
+                
+                if self._llm is None:
+                    return ComplianceLevel.WARNING, "LLM not available - pattern-based analysis only", 0.5
             
             # Generate response from LLM
-            response_text = llm.generate_text(prompt=prompt)
+            response_text = self._llm.generate_text(prompt)
             
             if not response_text:
                 logger.warning("LLM returned empty response")
