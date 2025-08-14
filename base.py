@@ -264,7 +264,7 @@ class A2AAgent(AgentExecutor, ABC):
             LLM client with generate_text method, or None if no API key found
         """
         try:
-            from llm_utils import get_llm
+            from utils.llm_utils import get_llm
             return get_llm(system_instruction=self.get_system_instruction())
         except (ImportError, RuntimeError) as e:
             self.logger.warning(f"LLM initialization failed: {e}")
