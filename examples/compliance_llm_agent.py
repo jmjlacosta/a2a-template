@@ -1,6 +1,6 @@
 """
-LLM-powered A2A Nutrition Agent Server
-Enhanced with Google ADK for intelligent nutrition analysis and recommendations.
+LLM-powered A2A Compliance Agent Server
+Enhanced with Google ADK for intelligent regulatory compliance analysis.
 """
 
 import os
@@ -37,11 +37,11 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler, RequestHandler
 
-# Import nutrition tools
-from nutrition_tools import (
-    analyze_nutrition,
-    calculate_meal_totals,
-    get_nutrition_recommendations,
+# Import compliance analysis tools
+from compliance_tools import (
+    analyze_compliance,
+    generate_compliance_report,
+    check_specific_regulation,
 )
 
 # Configure logging
@@ -51,38 +51,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class LLMNutritionAgentExecutor(AgentExecutor):
-    """LLM-powered A2A Agent Executor for intelligent nutrition analysis and recommendations."""
+class LLMComplianceAgentExecutor(AgentExecutor):
+    """LLM-powered A2A Agent Executor for regulatory compliance analysis (HIPAA, 21 CFR Part 11, GCP, etc.).""" 
 
     def __init__(self):
         super().__init__()
-        logger.info("🚀 Initializing LLM Nutrition Agent Executor")
+        logger.info("🚀 Initializing LLM Compliance Agent Executor")
         logger.info("📊 Loading environment configuration...")
 
         load_dotenv()
 
         # Check API key configuration
         google_api_key = os.getenv("GOOGLE_API_KEY")
-        nutritionix_api_key = os.getenv("NUTRITIONIX_API_KEY")
+        # No additional API keys needed for compliance analysis
 
         logger.info(
             f"🔑 Google API Key: {'✅ Configured' if google_api_key else '❌ Missing'}"
         )
-        logger.info(
-            f"🍎 Nutritionix API Key: {'✅ Configured' if nutritionix_api_key else '❌ Missing'}"
-        )
+        logger.info("📋 Compliance frameworks loaded: HIPAA, 21 CFR Part 11, GCP (ICH E6)")
 
         if not google_api_key:
             logger.warning("⚠️ GOOGLE_API_KEY not set. LLM features may not work.")
 
         self._model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001")
-        self._user_id = "nutrition_agent_user"
+        self._user_id = "compliance_agent_user"
 
         logger.info(f"🤖 Configuring LLM agent with model: {self._model}")
         logger.info(f"👤 Agent user ID: {self._user_id}")
 
         # Build the LLM agent
-        logger.info("🔧 Building LLM agent with nutrition-specific configuration...")
+        logger.info("🔧 Building LLM agent with compliance-specific configuration...")
         self._agent = self._build_llm_agent()
         logger.info(f"✅ LLM agent '{self._agent.name}' created successfully")
 
@@ -99,53 +97,61 @@ class LLMNutritionAgentExecutor(AgentExecutor):
         logger.info("🎯 Memory management services initialized")
         logger.info("📦 Artifact management services initialized")
 
-        logger.info("✅ LLM Nutrition Agent Executor initialization complete!")
+        logger.info("✅ LLM Compliance Agent Executor initialization complete!")
         logger.info(
-            f"🎯 Agent ready to handle nutrition queries with {len(self._agent.tools)} tools available"
+            f"🎯 Agent ready to handle compliance analysis with {len(self._agent.tools)} tools available"
         )
 
     def _build_llm_agent(self) -> LlmAgent:
-        """Build the LLM agent with nutrition-specific configuration."""
-        logger.info("📝 Creating nutrition-specific system instructions...")
+        """Build the LLM agent with compliance-specific configuration."""
+        logger.info("📝 Creating compliance-specific system instructions...")
 
         instruction = """
-You are a specialized AI nutrition assistant with access to comprehensive food and nutrition data. Your role is to help users understand their nutritional intake, make informed food choices, and achieve their health goals.
+You are a specialized AI regulatory compliance assistant with expertise in analyzing clinical trial protocols and healthcare documents for regulatory compliance. Your role is to identify potential compliance issues with HIPAA, 21 CFR Part 11, Good Clinical Practice (ICH E6), and other healthcare regulations.
 
 CORE CAPABILITIES:
-1. Analyze nutritional content of individual foods and complete meals
-2. Calculate daily nutrition totals and compare against recommended values  
-3. Provide personalized nutrition recommendations
-4. Answer questions about nutrition, health, and dietary choices
-5. Help with meal planning and food substitutions
+1. Analyze documents for regulatory compliance issues
+2. Generate detailed compliance reports with risk scores
+3. Check specific regulations and rules
+4. Provide recommendations for addressing compliance gaps
+5. Explain regulatory requirements and their implications
+
+REGULATORY FRAMEWORKS:
+- HIPAA (Health Insurance Portability and Accountability Act)
+- 21 CFR Part 11 (Electronic Records and Signatures)
+- Good Clinical Practice (ICH E6)
+- FDA IND Requirements
+- IRB Requirements
+- ONC HTI-1 (Data Transparency)
 
 INTERACTION PRINCIPLES:
-- Always be helpful, accurate, and supportive
-- Use the nutrition analysis tools to provide precise data when discussing specific foods
-- Consider the user's dietary restrictions, goals, and preferences
-- Provide context and explanations, not just raw numbers
-- Suggest practical, actionable advice
+- Be thorough and precise in identifying compliance issues
+- Use the compliance analysis tools to scan documents systematically
+- Provide context for each finding with regulatory references
+- Prioritize critical issues that need immediate attention
+- Suggest practical remediation steps
 
 DECISION PROCESS:
-1. If the user asks about specific foods or meals, use the analyze_nutrition or calculate_meal_totals tools
-2. If they want recommendations, use get_nutrition_recommendations after analyzing their current intake
-3. For general nutrition questions, provide evidence-based information
-4. Always explain the nutritional significance of the data you provide
+1. When given a document or protocol text, use analyze_compliance to check all frameworks
+2. For formatted output, use generate_compliance_report with appropriate format (text/json)
+3. For specific regulation checks, use check_specific_regulation
+4. Always explain the significance and potential impact of findings
 
 RESPONSE STYLE:
-- Be conversational and engaging
-- Break down complex nutritional information into understandable terms
-- Use specific numbers from your analysis tools when relevant
-- Provide actionable next steps or suggestions
-- Ask clarifying questions if needed to give better advice
+- Be professional and authoritative
+- Use clear regulatory terminology
+- Provide specific regulatory citations when relevant
+- Organize findings by severity (CRITICAL > VIOLATION > WARNING)
+- Include actionable recommendations
 
-IMPORTANT: Always use the available tools when analyzing specific foods or calculating nutritional values. Don't estimate or guess nutritional information when you have tools available to provide accurate data.
+IMPORTANT: Always use the compliance analysis tools when reviewing documents. The tools check for patterns that indicate regulatory violations across multiple frameworks. Provide comprehensive analysis covering all applicable regulations.
 """
 
-        logger.info("🛠️ Registering nutrition analysis tools...")
+        logger.info("🛠️ Registering compliance analysis tools...")
         function_tools = [
-            analyze_nutrition,
-            calculate_meal_totals,
-            get_nutrition_recommendations,
+            analyze_compliance,
+            generate_compliance_report,
+            check_specific_regulation,
         ]
         logger.info(
             f"📋 Raw functions registered: {[tool.__name__ for tool in function_tools]}"
@@ -159,8 +165,8 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
         logger.info("🔨 Creating LlmAgent instance...")
         agent = LlmAgent(
             model=self._model,
-            name="ai_nutrition_assistant",
-            description="AI-powered nutrition analysis and meal planning assistant with access to comprehensive food database",
+            name="ai_compliance_validator",
+            description="AI-powered regulatory compliance validator for clinical trials and healthcare documentation",
             instruction=instruction,
             tools=tools,
         )
@@ -214,7 +220,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
 
             if not user_message.strip():
                 logger.warning(f"❌ [{request_id}] Empty user message received")
-                response_msg = "Please provide a nutrition-related question or food description to analyze."
+                response_msg = "Please provide a clinical trial protocol or healthcare document text to analyze for compliance."
                 logger.info(
                     f"📤 [{request_id}] Sending empty message response: {response_msg}"
                 )
@@ -304,11 +310,11 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
 
                     # Add the response as an artifact and complete the task
                     logger.info(
-                        f"📎 [{request_id}] Adding response as artifact 'nutrition_analysis'"
+                        f"📎 [{request_id}] Adding response as artifact 'compliance_analysis'"
                     )
                     await updater.add_artifact(
                         [Part(root=TextPart(text=final_content))],
-                        name="nutrition_analysis",
+                        name="compliance_analysis",
                     )
                     logger.info(f"✅ [{request_id}] Artifact added successfully")
 
@@ -366,7 +372,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
             )
             logger.error(f"🔍 [{request_id}] Exception type: {type(e).__name__}")
             error_message = (
-                f"An error occurred while processing your nutrition query: {str(e)}"
+                f"An error occurred while processing your compliance analysis: {str(e)}"
             )
             logger.info(
                 f"📤 [{request_id}] Sending error message to client: {error_message[:100]}..."
@@ -376,7 +382,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
 
     async def cancel(self, request: RequestContext, event_queue: EventQueue) -> None:
         """Cancel the current request."""
-        logger.info("🛑 Cancellation request received for nutrition agent")
+        logger.info("🛑 Cancellation request received for compliance agent")
         logger.warning(
             "⚠️ Cancel operation not supported - raising UnsupportedOperationError"
         )
@@ -538,7 +544,7 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
                         logger.info(f"📊 Sending generic processing update")
                         yield {
                             "is_task_complete": False,
-                            "updates": "Analyzing nutrition data...",
+                            "updates": "Analyzing document for compliance issues...",
                             "session_id": session.id,
                         }
 
@@ -563,12 +569,12 @@ IMPORTANT: Always use the available tools when analyzing specific foods or calcu
             }
 
 
-# Create enhanced agent card for LLM-powered nutrition agent
-logger.info("📋 Creating enhanced agent card for LLM-powered nutrition agent...")
+# Create enhanced agent card for LLM-powered compliance agent
+logger.info("📋 Creating enhanced agent card for LLM-powered compliance agent...")
 
 agent_card = AgentCard(
-    name="AI Nutrition Assistant",
-    description="Intelligent nutrition analysis and meal planning assistant powered by advanced AI. Get personalized nutrition insights, meal analysis, and dietary recommendations.",
+    name="AI Regulatory Compliance Validator",
+    description="Intelligent regulatory compliance analysis for clinical trials and healthcare documentation. Checks HIPAA, 21 CFR Part 11, GCP (ICH E6), and other regulations.",
     version="2.0.0",
     url=os.getenv("HU_APP_URL") or "http://localhost:8003",
     capabilities=AgentCapabilities(
@@ -576,47 +582,47 @@ agent_card = AgentCard(
     ),
     skills=[
         AgentSkill(
-            id="intelligent_nutrition_analysis",
-            name="Intelligent Nutrition Analysis",
-            description="AI-powered analysis of foods and meals with personalized insights and recommendations",
-            tags=["nutrition", "AI", "health", "analysis", "personalized", "smart"],
+            id="regulatory_compliance_analysis",
+            name="Regulatory Compliance Analysis",
+            description="AI-powered analysis of clinical trial protocols and healthcare documents for regulatory compliance",
+            tags=["compliance", "regulatory", "HIPAA", "21CFR", "GCP", "healthcare"],
             examples=[
-                "Analyze the nutrition in my breakfast: scrambled eggs, toast, and orange juice",
-                "What are the health benefits of eating salmon twice a week?",
-                "I'm trying to lose weight - is this meal good for me?",
-                "Calculate the total nutrition for my lunch: chicken salad sandwich and apple",
-                "What foods should I eat to get more protein in my diet?",
-                "Compare the nutrition between brown rice and quinoa",
-                "I'm diabetic - help me plan a low-carb dinner",
-                "What are the nutritional differences between grass-fed and regular beef?",
+                "Check this clinical trial protocol for HIPAA compliance issues",
+                "Analyze our eCRF system documentation for 21 CFR Part 11 compliance",
+                "Review this informed consent form for IRB requirements",
+                "Identify GCP violations in our monitoring plan",
+                "Check if our data management plan meets FDA IND requirements",
+                "Analyze this protocol for all regulatory compliance issues",
+                "Generate a compliance report for our Phase III trial protocol",
+                "What are the main compliance risks in this document?",
             ],
             input_modes=["application/json", "text/plain"],
             output_modes=["application/json", "text/plain"],
         ),
         AgentSkill(
-            id="meal_planning_assistant",
-            name="AI Meal Planning",
-            description="Intelligent meal planning with dietary restrictions, preferences, and health goals",
-            tags=["meal-planning", "dietary-restrictions", "health-goals", "AI"],
+            id="specific_regulation_check",
+            name="Specific Regulation Checking",
+            description="Check documents against specific regulatory frameworks or individual rules",
+            tags=["regulation", "specific-check", "validation", "audit"],
             examples=[
-                "Help me plan a high-protein meal for post-workout",
-                "Suggest a heart-healthy dinner with less than 500 calories",
-                "I'm vegetarian and need more iron - what should I eat?",
-                "Plan a diabetic-friendly breakfast with good fiber content",
+                "Check only HIPAA encryption requirements in this document",
+                "Focus on 21 CFR Part 11 audit trail requirements",
+                "Review only the essential documents section for GCP compliance",
+                "Check if PHI de-identification meets HIPAA standards",
             ],
             input_modes=["application/json", "text/plain"],
             output_modes=["application/json", "text/plain"],
         ),
         AgentSkill(
-            id="nutrition_education",
-            name="Nutrition Education & Guidance",
-            description="Educational content about nutrition science, health recommendations, and dietary guidance",
-            tags=["education", "health", "science", "guidance"],
+            id="compliance_reporting",
+            name="Compliance Report Generation",
+            description="Generate comprehensive compliance reports with risk scores and recommendations",
+            tags=["reporting", "risk-assessment", "recommendations", "documentation"],
             examples=[
-                "Explain the role of antioxidants in my diet",
-                "What's the difference between good and bad cholesterol?",
-                "How much water should I drink per day?",
-                "What are the signs of vitamin D deficiency?",
+                "Generate a full compliance report for this protocol",
+                "Create an executive summary of compliance findings",
+                "Provide a risk assessment with recommendations",
+                "Export compliance findings in JSON format",
             ],
             input_modes=["application/json", "text/plain"],
             output_modes=["application/json", "text/plain"],
@@ -625,16 +631,16 @@ agent_card = AgentCard(
     default_input_modes=["application/json", "text/plain"],
     default_output_modes=["application/json", "text/plain"],
     provider=AgentProvider(
-        organization="AI Nutrition Solutions",
-        url="https://www.nutritionix.com",
+        organization="AI Regulatory Compliance Solutions",
+        url="https://www.healthuniverse.com",
     ),
 )
 
 # Create the A2A Starlette application with LLM agent
 logger.info("🏗️ Building A2A application components...")
 
-logger.info("🤖 Creating LLM Nutrition Agent Executor...")
-agent_executor = LLMNutritionAgentExecutor()
+logger.info("🤖 Creating LLM Compliance Agent Executor...")
+agent_executor = LLMComplianceAgentExecutor()
 logger.info("✅ Agent executor created successfully")
 
 logger.info("📋 Creating task store (In-Memory)...")
@@ -661,44 +667,40 @@ logger.info("✅ A2A Starlette application built successfully")
 logger.info("🎯 Application ready for deployment")
 
 if __name__ == "__main__":
-    logger.info("🚀 Starting LLM-powered AI Nutrition Assistant")
-    logger.info("🤖 Enhanced with Google ADK for intelligent responses")
+    logger.info("🚀 Starting LLM-powered AI Regulatory Compliance Validator")
+    logger.info("🤖 Enhanced with Google ADK for intelligent compliance analysis")
     logger.info("🌐 Server will be available at http://0.0.0.0:8003")
     logger.info(
-        "📋 Agent capabilities: streaming, session management, tool integration"
+        "📋 Agent capabilities: streaming compliance analysis, multi-framework checking"
     )
 
     # Detailed environment setup check
     logger.info("🔍 Performing environment configuration check...")
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    nutritionix_api_key = os.getenv("NUTRITIONIX_API_KEY")
     model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001")
 
     logger.info(f"🔑 Environment Variables Status:")
     logger.info(f"   • GOOGLE_API_KEY: {'✅ Set' if google_api_key else '❌ Missing'}")
-    logger.info(
-        f"   • NUTRITIONIX_API_KEY: {'✅ Set' if nutritionix_api_key else '❌ Missing'}"
-    )
     logger.info(f"   • GEMINI_MODEL: {model}")
+    logger.info("📋 Compliance Frameworks Available:")
+    logger.info("   • HIPAA (Privacy & Security Rules)")
+    logger.info("   • 21 CFR Part 11 (Electronic Records/Signatures)")
+    logger.info("   • Good Clinical Practice (ICH E6)")
+    logger.info("   • FDA IND Requirements")
+    logger.info("   • IRB Requirements (45 CFR 46)")
+    logger.info("   • ONC HTI-1 (Data Transparency)")
 
     if not google_api_key:
         logger.warning(
             "⚠️ GOOGLE_API_KEY not properly configured. Please set your Google API key in .env file."
         )
         logger.warning(
-            "⚠️ The agent will use fallback nutrition data until the API key is configured."
+            "⚠️ The agent will use pattern matching only without LLM enhancement."
         )
         logger.warning("⚠️ LLM features may be limited or non-functional")
     else:
         logger.info("✅ Google API key configured - Full LLM features enabled")
-        logger.info(f"🎯 Agent will use {model} for intelligent responses")
-
-    if not nutritionix_api_key:
-        logger.warning(
-            "⚠️ NUTRITIONIX_API_KEY not configured - will use mock nutrition data"
-        )
-    else:
-        logger.info("✅ Nutritionix API key configured - Real nutrition data available")
+        logger.info(f"🎯 Agent will use {model} for intelligent compliance analysis")
 
     logger.info("🏗️ Application components initialized:")
     logger.info("   • LLM Agent Executor: Ready")
@@ -711,6 +713,6 @@ if __name__ == "__main__":
         logger.info(f"   • {skill.name}: {skill.description}")
 
     logger.info("🔧 Starting Uvicorn server...")
-    logger.info("📡 Ready to accept nutrition queries!")
+    logger.info("📡 Ready to analyze documents for regulatory compliance!")
 
     uvicorn.run(app, host="0.0.0.0", port=8003)
