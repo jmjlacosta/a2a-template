@@ -248,3 +248,33 @@ class A2AAgent(AgentExecutor, ABC):
             False by default
         """
         return False
+    
+    # Optional LLM helper methods
+    
+    def get_llm_client(self):
+        """
+        Helper to get an LLM client with automatic provider detection.
+        Detects and uses ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY.
+        
+        Usage in your process_message method:
+            llm = self.get_llm_client()
+            response = llm.generate_text("Your prompt here")
+        
+        Returns:
+            LLM client with generate_text method, or None if no API key found
+        """
+        try:
+            from llm_utils import get_llm
+            return get_llm(system_instruction=self.get_system_instruction())
+        except (ImportError, RuntimeError) as e:
+            self.logger.warning(f"LLM initialization failed: {e}")
+            return None
+    
+    def get_system_instruction(self) -> str:
+        """
+        Override to provide custom system instruction for LLM agents.
+        
+        Returns:
+            System instruction for the LLM
+        """
+        return "You are a helpful AI assistant."

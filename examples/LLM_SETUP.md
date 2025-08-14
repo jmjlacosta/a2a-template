@@ -1,16 +1,59 @@
 # LLM Setup for A2A Agent Examples
 
-## Quick Start with OpenAI
+## Automatic LLM Detection
 
-Most examples that use LLMs have been updated to work directly with OpenAI API:
+The A2A template now includes **automatic LLM provider detection**! Just set any of these environment variables and your agent will automatically use the right provider:
 
 ```bash
-# Set your OpenAI API key
-export OPENAI_API_KEY="your-openai-api-key"
+# Option 1: Use Claude (Anthropic)
+export ANTHROPIC_API_KEY="your-anthropic-key"
 
-# Run an LLM-powered agent
-python examples/llm_assistant_agent.py
+# Option 2: Use GPT-3.5/GPT-4 (OpenAI)
+export OPENAI_API_KEY="your-openai-key"
+
+# Option 3: Use Gemini (Google)
+export GOOGLE_API_KEY="your-google-key"
 ```
+
+## Quick Start Example
+
+Try the automatic LLM agent that works with ANY provider:
+
+```bash
+# Set ANY API key - the agent auto-detects which to use
+export OPENAI_API_KEY="your-key"  # or ANTHROPIC_API_KEY or GOOGLE_API_KEY
+
+# Run the auto-detecting agent
+python examples/auto_llm_agent.py
+```
+
+## Creating Your Own LLM Agent
+
+It's now super simple - just use the `get_llm_client()` helper:
+
+```python
+from base import A2AAgent
+
+class MyLLMAgent(A2AAgent):
+    def get_agent_name(self) -> str:
+        return "My Agent"
+    
+    def get_agent_description(self) -> str:
+        return "My intelligent agent"
+    
+    def get_system_instruction(self) -> str:
+        return "You are a helpful assistant specialized in X"
+    
+    async def process_message(self, message: str) -> str:
+        # Automatically uses Claude, GPT, or Gemini based on env vars!
+        llm = self.get_llm_client()
+        if not llm:
+            return "Please set an API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY)"
+        
+        return llm.generate_text(message)
+```
+
+That's it! Your agent now automatically supports all three major LLM providers.
 
 ## Examples with LLM Support
 
