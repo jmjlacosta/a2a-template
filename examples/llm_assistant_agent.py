@@ -26,13 +26,23 @@ import json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from base import BaseLLMAgentExecutor
+from base import A2AAgent
+from google.adk import get_llm
 from google.adk.tools import FunctionTool
 from typing import List
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
 
 
-class AssistantAgent(BaseLLMAgentExecutor):
+class AssistantAgent(A2AAgent):
     """AI assistant with helpful tools."""
+    
+    def __init__(self):
+        super().__init__()
+        self._llm = None
+        self._tools = None
+        self._initialize_tools()
     
     def get_agent_name(self) -> str:
         return "AI Assistant"
@@ -40,8 +50,19 @@ class AssistantAgent(BaseLLMAgentExecutor):
     def get_agent_description(self) -> str:
         return "Helpful AI assistant with tools for time, calculations, and weather"
     
-    def get_system_instruction(self) -> str:
-        return """You are a helpful AI assistant with access to several tools.
+    def _initialize_tools(self):
+        """Initialize assistant tools."""
+        self._tools = [
+            FunctionTool(self._get_current_time),
+            FunctionTool(self._calculate),
+            FunctionTool(self._get_weather)
+        ]
+    
+    async def process_message(self, message: str) -> str:
+        """Process message using LLM with tools."""
+        # Initialize LLM if needed
+        if self._llm is None:
+            system_instruction = """You are a helpful AI assistant with access to several tools.
         
 Available tools:
 - get_current_time: Get the current date and time
@@ -50,14 +71,16 @@ Available tools:
 
 Be concise and friendly in your responses. Use tools when appropriate.
 If asked about something you can calculate or look up with tools, use them."""
-    
-    def get_tools(self) -> List[FunctionTool]:
-        """Return list of available tools."""
-        return [
-            FunctionTool(self._get_current_time),
-            FunctionTool(self._calculate),
-            FunctionTool(self._get_weather)
-        ]
+            
+            self._llm = get_llm(system_instruction=system_instruction)
+        
+        # Generate response with tools
+        response = self._llm.generate_text(
+            prompt=message,
+            tools=self._tools
+        )
+        
+        return response
     
     def _get_current_time(self) -> str:
         """Get current date and time.

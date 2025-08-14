@@ -20,6 +20,7 @@ import re
 import os
 import logging
 import asyncio
+import uvicorn
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -28,7 +29,11 @@ from enum import Enum
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from base import BaseLLMAgentExecutor
+from base import A2AAgent
+from google.adk import get_llm
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +84,7 @@ class ComplianceReport:
     ai_insights: List[str] = field(default_factory=list)
 
 
-class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
+class RegulatoryComplianceAIAgent(A2AAgent):
     """
     AI-Enhanced agent that validates clinical trial documentation for regulatory compliance.
     Uses pattern detection followed by LLM analysis for accurate violation assessment.
@@ -88,15 +93,11 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
     def __init__(self):
         super().__init__()
         self.compliance_rules = self._initialize_compliance_rules()
+        self._llm = None
         
-        # Use the session created by the base class if available
-        if hasattr(self, '_default_session_id'):
-            self.session_id = self._default_session_id
-            self.user_id = self._default_user_id
-        else:
-            # Fallback if base class doesn't create session
-            self.session_id = "compliance_session"
-            self.user_id = "compliance_user"
+        # Session management for LLM context
+        self.session_id = "compliance_session"
+        self.user_id = "compliance_user"
         
         # Rate limiting settings
         self.llm_call_delay = 0.5  # Delay between LLM calls in seconds
@@ -114,31 +115,29 @@ class RegulatoryComplianceAIAgent(BaseLLMAgentExecutor):
             "detailed compliance reports with risk assessments and recommendations."
         )
     
-    def get_system_instruction(self) -> str:
-        return """You are an expert regulatory compliance analyst specializing in healthcare 
-        and clinical trials. Your role is to analyze text excerpts and determine if they 
-        represent actual regulatory violations or compliance issues.
-        
-        You have deep knowledge of:
-        - HIPAA Privacy and Security Rules
-        - 21 CFR Part 11 (Electronic Records and Signatures)
-        - IRB requirements and human subjects protection
-        - ONC HTI-1 transparency and interoperability requirements
-        
-        When analyzing text, consider:
-        1. The specific regulatory requirement
-        2. Whether the text indicates compliance, non-compliance, or is neutral
-        3. The severity of any violation (critical, violation, warning, or compliant)
-        4. Context clues that indicate proper safeguards or lack thereof
-        
-        Be precise and avoid false positives. Only flag actual violations or clear risks."""
-    
-    def get_tools(self) -> List[Any]:
-        """
-        Return list of tools for the LLM agent.
-        For compliance validation, we don't need external tools - just analysis.
-        """
-        return []  # No external tools needed for compliance analysis
+    def _get_llm(self):
+        """Initialize LLM if needed."""
+        if self._llm is None:
+            system_instruction = """You are an expert regulatory compliance analyst specializing in healthcare 
+            and clinical trials. Your role is to analyze text excerpts and determine if they 
+            represent actual regulatory violations or compliance issues.
+            
+            You have deep knowledge of:
+            - HIPAA Privacy and Security Rules
+            - 21 CFR Part 11 (Electronic Records and Signatures)
+            - IRB requirements and human subjects protection
+            - ONC HTI-1 transparency and interoperability requirements
+            
+            When analyzing text, consider:
+            1. The specific regulatory requirement
+            2. Whether the text indicates compliance, non-compliance, or is neutral
+            3. The severity of any violation (critical, violation, warning, or compliant)
+            4. Context clues that indicate proper safeguards or lack thereof
+            
+            Be precise and avoid false positives. Only flag actual violations or clear risks."""
+            
+            self._llm = get_llm(system_instruction=system_instruction)
+        return self._llm
     
     def _initialize_compliance_rules(self) -> Dict[RegulatoryFramework, List[Dict[str, Any]]]:
         """Initialize comprehensive compliance rules for each framework."""
@@ -601,50 +600,15 @@ RESPOND WITH THIS EXACT JSON STRUCTURE:
 Provide ONLY the JSON response, no additional text."""
         
         try:
-            # Use the runner with proper session management
-            if self._runner and self._agent:
-                from google.adk.runners import types
-                
-                # Create proper Content message
-                text_part = types.Part(text=prompt)
-                message = types.Content(parts=[text_part], role="user")
-                
-                # Ensure session exists
-                if hasattr(self, '_session_service'):
-                    try:
-                        # Try to create session if it doesn't exist
-                        await self._session_service.create_session(
-                            app_name=self.get_agent_name(),
-                            user_id=self.user_id,
-                            session_id=self.session_id
-                        )
-                    except Exception:
-                        # Session might already exist, that's OK
-                        pass
-                
-                # Use run_async with the session
-                response_text = ""
-                async for event in self._runner.run_async(
-                    user_id=self.user_id,
-                    session_id=self.session_id,
-                    new_message=message,
-                ):
-                    # Extract text from event
-                    if hasattr(event, 'text'):
-                        response_text += event.text
-                    elif hasattr(event, 'content'):
-                        # Handle Content object with parts
-                        content = event.content
-                        if hasattr(content, 'parts'):
-                            for part in content.parts:
-                                if hasattr(part, 'text'):
-                                    response_text += part.text
-                        elif hasattr(content, 'text'):
-                            response_text += content.text
-            else:
-                # Fallback if no LLM is configured
-                logger.warning("No LLM configured, using pattern-based analysis only")
-                return ComplianceLevel.WARNING, "LLM not available - pattern-based analysis only", 0.5
+            # Get or initialize LLM
+            llm = self._get_llm()
+            
+            # Generate response from LLM
+            response_text = llm.generate_text(prompt=prompt)
+            
+            if not response_text:
+                logger.warning("LLM returned empty response")
+                return ComplianceLevel.WARNING, "LLM returned empty response - skipping", 0.2
             
             # Parse the JSON response with improved debugging
             logger.debug(f"LLM response length: {len(response_text)} chars")
@@ -1129,7 +1093,25 @@ Provide ONLY the JSON response, no additional text."""
             )
 
 
+# Module-level app creation for HealthUniverse deployment
+agent = RegulatoryComplianceAIAgent()
+agent_card = agent.create_agent_card()
+task_store = InMemoryTaskStore()
+request_handler = DefaultRequestHandler(
+    agent_executor=agent,
+    task_store=task_store
+)
+
+# Create the app - for HealthUniverse deployment
+app = A2AStarletteApplication(
+    agent_card=agent_card,
+    http_handler=request_handler
+).build()
+
+
 if __name__ == "__main__":
-    # Run the agent
-    agent = RegulatoryComplianceAIAgent()
-    agent.run(port=8000)
+    port = int(os.getenv("PORT", 8000))
+    print(f"🚀 Starting {agent.get_agent_name()}")
+    print(f"📍 Server: http://localhost:{port}")
+    print(f"📋 Agent Card: http://localhost:{port}/.well-known/agent-card.json")
+    uvicorn.run(app, host="0.0.0.0", port=port)

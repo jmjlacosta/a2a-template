@@ -23,26 +23,35 @@ The orchestrator can:
 - Provide unified responses
 """
 
+import os
 import sys
 import json
 import asyncio
+import uvicorn
 from typing import List, Dict, Any
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from base import BaseLLMAgentExecutor
+from base import A2AAgent
 from utils.a2a_client import A2AAgentClient, AgentRegistry
+from google.adk import get_llm
 from google.adk.tools import FunctionTool
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
 
 
-class OrchestratorAgent(BaseLLMAgentExecutor):
+class OrchestratorAgent(A2AAgent):
     """Coordinate multiple agents to solve complex tasks."""
     
     def __init__(self):
+        super().__init__()
         self.client = A2AAgentClient()
         self.registry = AgentRegistry()
         self.available_agents = self._discover_agents()
-        super().__init__()
+        self._llm = None
+        self._tools = None
+        self._initialize_tools()
     
     def get_agent_name(self) -> str:
         return "Task Orchestrator"
@@ -50,7 +59,39 @@ class OrchestratorAgent(BaseLLMAgentExecutor):
     def get_agent_description(self) -> str:
         return "Orchestrates multiple specialized agents to handle complex tasks"
     
-    def get_system_instruction(self) -> str:
+    def _initialize_tools(self):
+        """Initialize orchestration tools."""
+        tools = []
+        
+        # Create a tool for each registered agent
+        for agent_name in self.available_agents:
+            tools.append(self._create_agent_tool(agent_name))
+        
+        # Add orchestration-specific tools
+        tools.extend([
+            FunctionTool(self._parallel_execute),
+            FunctionTool(self._sequential_execute),
+            FunctionTool(self._combine_results)
+        ])
+        
+        self._tools = tools
+    
+    async def process_message(self, message: str) -> str:
+        """Process orchestration request using LLM with agent tools."""
+        # Initialize LLM if needed
+        if self._llm is None:
+            system_instruction = self._get_system_instruction()
+            self._llm = get_llm(system_instruction=system_instruction)
+        
+        # Generate response with tools
+        response = self._llm.generate_text(
+            prompt=message,
+            tools=self._tools
+        )
+        
+        return response
+    
+    def _get_system_instruction(self) -> str:
         agents_list = "\n".join([
             f"- {name}: {info.get('description', 'No description')}"
             for name, info in self.available_agents.items()
@@ -76,23 +117,6 @@ Guidelines:
 - Provide clear, unified responses
 
 Remember: You're the conductor of an orchestra - coordinate the specialists to create harmony!"""
-    
-    def get_tools(self) -> List[FunctionTool]:
-        """Create tools for agent interaction."""
-        tools = []
-        
-        # Create a tool for each registered agent
-        for agent_name in self.available_agents:
-            tools.append(self._create_agent_tool(agent_name))
-        
-        # Add orchestration-specific tools
-        tools.extend([
-            FunctionTool(self._parallel_execute),
-            FunctionTool(self._sequential_execute),
-            FunctionTool(self._combine_results)
-        ])
-        
-        return tools
     
     def _discover_agents(self) -> Dict[str, Dict[str, Any]]:
         """Discover available agents from registry."""
@@ -301,6 +325,25 @@ Remember: You're the conductor of an orchestra - coordinate the specialists to c
         return json.dumps(combined, indent=2)
 
 
+# Module-level app creation for HealthUniverse deployment
+agent = OrchestratorAgent()
+agent_card = agent.create_agent_card()
+task_store = InMemoryTaskStore()
+request_handler = DefaultRequestHandler(
+    agent_executor=agent,
+    task_store=task_store
+)
+
+# Create the app - for HealthUniverse deployment
+app = A2AStarletteApplication(
+    agent_card=agent_card,
+    http_handler=request_handler
+).build()
+
+
 if __name__ == "__main__":
-    agent = OrchestratorAgent()
-    agent.run(port=8004)
+    port = int(os.getenv("PORT", 8004))
+    print(f"🚀 Starting {agent.get_agent_name()}")
+    print(f"📍 Server: http://localhost:{port}")
+    print(f"📋 Agent Card: http://localhost:{port}/.well-known/agent-card.json")
+    uvicorn.run(app, host="0.0.0.0", port=port)

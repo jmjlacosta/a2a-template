@@ -12,10 +12,12 @@ Input: Protocol documents, SOPs, regulatory requirements as text
 Output: Compliance report with flagged risks and recommendations
 """
 
+import os
 import sys
 import json
 import re
 import logging
+import uvicorn
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -24,7 +26,10 @@ from enum import Enum
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from base import BaseAgentExecutor
+from base import A2AAgent
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +73,7 @@ class ComplianceReport:
     recommendations: List[str] = field(default_factory=list)
 
 
-class RegulatoryComplianceAgent(BaseAgentExecutor):
+class RegulatoryComplianceAgent(A2AAgent):
     """
     Agent that validates clinical trial documentation for regulatory compliance.
     """
@@ -556,7 +561,25 @@ class RegulatoryComplianceAgent(BaseAgentExecutor):
             )
 
 
+# Module-level app creation for HealthUniverse deployment
+agent = RegulatoryComplianceAgent()
+agent_card = agent.create_agent_card()
+task_store = InMemoryTaskStore()
+request_handler = DefaultRequestHandler(
+    agent_executor=agent,
+    task_store=task_store
+)
+
+# Create the app - for HealthUniverse deployment
+app = A2AStarletteApplication(
+    agent_card=agent_card,
+    http_handler=request_handler
+).build()
+
+
 if __name__ == "__main__":
-    # Run the agent
-    agent = RegulatoryComplianceAgent()
-    agent.run(port=8000)
+    port = int(os.getenv("PORT", 8000))
+    print(f"🚀 Starting {agent.get_agent_name()}")
+    print(f"📍 Server: http://localhost:{port}")
+    print(f"📋 Agent Card: http://localhost:{port}/.well-known/agent-card.json")
+    uvicorn.run(app, host="0.0.0.0", port=port)

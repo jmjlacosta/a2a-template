@@ -21,19 +21,31 @@ The agent can:
 - Extract key information
 """
 
+import os
 import sys
 import re
 import json
+import uvicorn
 from typing import List, Dict, Any
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from base import BaseLLMAgentExecutor
+from base import A2AAgent
+from google.adk import get_llm
 from google.adk.tools import FunctionTool
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
 
 
-class DocumentAnalyzerAgent(BaseLLMAgentExecutor):
+class DocumentAnalyzerAgent(A2AAgent):
     """Analyze documents with intelligent processing."""
+    
+    def __init__(self):
+        super().__init__()
+        self._llm = None
+        self._tools = None
+        self._initialize_tools()
     
     def get_agent_name(self) -> str:
         return "Document Analyzer"
@@ -41,8 +53,20 @@ class DocumentAnalyzerAgent(BaseLLMAgentExecutor):
     def get_agent_description(self) -> str:
         return "Analyzes documents with chunking, keyword extraction, and summarization"
     
-    def get_system_instruction(self) -> str:
-        return """You are a document analysis expert specialized in:
+    def _initialize_tools(self):
+        """Initialize document analysis tools."""
+        self._tools = [
+            FunctionTool(self._extract_chunks),
+            FunctionTool(self._find_keywords),
+            FunctionTool(self._analyze_structure),
+            FunctionTool(self._extract_entities)
+        ]
+    
+    async def process_message(self, message: str) -> str:
+        """Process document analysis request using LLM with tools."""
+        # Initialize LLM if needed
+        if self._llm is None:
+            system_instruction = """You are a document analysis expert specialized in:
         
 1. Document Structure Analysis
    - Identify sections, headers, and paragraphs
@@ -60,15 +84,16 @@ class DocumentAnalyzerAgent(BaseLLMAgentExecutor):
 
 Use the available tools to process documents effectively.
 Be precise and thorough in your analysis."""
-    
-    def get_tools(self) -> List[FunctionTool]:
-        """Return document analysis tools."""
-        return [
-            FunctionTool(self._extract_chunks),
-            FunctionTool(self._find_keywords),
-            FunctionTool(self._analyze_structure),
-            FunctionTool(self._extract_entities)
-        ]
+            
+            self._llm = get_llm(system_instruction=system_instruction)
+        
+        # Generate response with tools
+        response = self._llm.generate_text(
+            prompt=message,
+            tools=self._tools
+        )
+        
+        return response
     
     def _extract_chunks(self, text: str, chunk_size: int = 500) -> str:
         """Split text into semantic chunks.
@@ -267,6 +292,25 @@ Be precise and thorough in your analysis."""
         return json.dumps(entities, indent=2)
 
 
+# Module-level app creation for HealthUniverse deployment
+agent = DocumentAnalyzerAgent()
+agent_card = agent.create_agent_card()
+task_store = InMemoryTaskStore()
+request_handler = DefaultRequestHandler(
+    agent_executor=agent,
+    task_store=task_store
+)
+
+# Create the app - for HealthUniverse deployment
+app = A2AStarletteApplication(
+    agent_card=agent_card,
+    http_handler=request_handler
+).build()
+
+
 if __name__ == "__main__":
-    agent = DocumentAnalyzerAgent()
-    agent.run(port=8003)
+    port = int(os.getenv("PORT", 8003))
+    print(f"🚀 Starting {agent.get_agent_name()}")
+    print(f"📍 Server: http://localhost:{port}")
+    print(f"📋 Agent Card: http://localhost:{port}/.well-known/agent-card.json")
+    uvicorn.run(app, host="0.0.0.0", port=port)

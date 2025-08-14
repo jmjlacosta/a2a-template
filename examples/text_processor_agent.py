@@ -5,7 +5,7 @@ Text Processor Agent - Demonstrates business logic without LLM.
 This example demonstrates:
 - Text processing operations (uppercase, word count, reverse, etc.)
 - Command-based message parsing
-- BaseAgentExecutor for deterministic operations
+- A2AAgent for deterministic operations
 - No LLM required for simple transformations
 
 Usage:
@@ -25,15 +25,20 @@ Example messages:
     "reverse: hello" -> "olleh"
 """
 
+import os
 import sys
 import re
+import uvicorn
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from base import BaseAgentExecutor
+from base import A2AAgent
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
 
 
-class TextProcessorAgent(BaseAgentExecutor):
+class TextProcessorAgent(A2AAgent):
     """Process text with various operations."""
     
     def get_agent_name(self) -> str:
@@ -87,6 +92,25 @@ class TextProcessorAgent(BaseAgentExecutor):
 • extract_numbers: <text> - Extract numbers"""
 
 
+# Module-level app creation for HealthUniverse deployment
+agent = TextProcessorAgent()
+agent_card = agent.create_agent_card()
+task_store = InMemoryTaskStore()
+request_handler = DefaultRequestHandler(
+    agent_executor=agent,
+    task_store=task_store
+)
+
+# Create the app - for HealthUniverse deployment
+app = A2AStarletteApplication(
+    agent_card=agent_card,
+    http_handler=request_handler
+).build()
+
+
 if __name__ == "__main__":
-    agent = TextProcessorAgent()
-    agent.run(port=8001)
+    port = int(os.getenv("PORT", 8001))
+    print(f"🚀 Starting {agent.get_agent_name()}")
+    print(f"📍 Server: http://localhost:{port}")
+    print(f"📋 Agent Card: http://localhost:{port}/.well-known/agent-card.json")
+    uvicorn.run(app, host="0.0.0.0", port=port)
