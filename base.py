@@ -278,3 +278,29 @@ class A2AAgent(AgentExecutor, ABC):
             System instruction for the LLM
         """
         return "You are a helpful AI assistant."
+    
+    async def call_other_agent(self, agent_url: str, message: str, timeout: float = 30.0) -> str:
+        """
+        Helper method to call another A2A-compliant agent.
+        
+        Args:
+            agent_url: URL of the agent to call
+            message: Message to send to the agent
+            timeout: Request timeout in seconds
+            
+        Returns:
+            Response from the other agent
+            
+        Usage:
+            response = await self.call_other_agent(
+                "https://other-agent.example.com",
+                "Hello from my agent!"
+            )
+        """
+        try:
+            from utils.a2a_client import A2AAgentClient
+            async with A2AAgentClient(timeout=timeout) as client:
+                return await client.call_agent(agent_url, message)
+        except Exception as e:
+            self.logger.error(f"Failed to call agent at {agent_url}: {e}")
+            raise ServerError(error=e)
