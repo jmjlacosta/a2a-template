@@ -63,7 +63,19 @@ class OrchestratorAgent(A2AAgent):
         pass
     
     async def process_message(self, message: str) -> str:
-        """Process orchestration request using LLM."""
+        """Process orchestration request using LLM or direct agent calls."""
+        # Example of using the simplified call_other_agent method
+        if message.startswith("/call "):
+            parts = message[6:].split(" ", 1)
+            if len(parts) == 2:
+                agent_name, agent_message = parts
+                try:
+                    # This will automatically look up the agent in the registry
+                    response = await self.call_other_agent(agent_name, agent_message)
+                    return f"Response from {agent_name}: {response}"
+                except Exception as e:
+                    return f"Failed to call {agent_name}: {str(e)}"
+        
         # Get LLM client with automatic provider detection
         if self._llm is None:
             self._llm = self.get_llm_client()
@@ -80,12 +92,15 @@ class OrchestratorAgent(A2AAgent):
         enhanced_prompt = f"""As an orchestrator, you coordinate multiple specialized agents.
 
 Available agents:
-{agents_info if agents_info else '- No agents configured'}
+{agents_info if agents_info else '- No agents configured (check config/agents.json)'}
 
 User request: {message}
 
+Commands:
+- /call <agent-name> <message> - Call a specific agent
+
 Please explain how you would coordinate the agents to handle this request.
-Note: In a full implementation, you would actually call these agents."""
+Note: In HealthUniverse, agent URLs are in config/agents.json."""
         
         # Generate response
         try:

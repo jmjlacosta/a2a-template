@@ -81,25 +81,44 @@ class A2AAgentClient:
             logger.debug(f"Using cached agent card for {agent_url}")
             return self.agent_card_cache[agent_url]
         
-        # Fetch from well-known endpoint
-        card_url = f"{agent_url}/.well-known/agentcard.json"
-        logger.info(f"Fetching agent card from {card_url}")
+        # Try both possible well-known endpoints
+        # A2A spec is inconsistent - examples show agent-card.json (with hyphen)
+        # but spec text shows agentcard.json (no hyphen)
+        # HealthUniverse may use agent.json
+        possible_endpoints = [
+            f"{agent_url}/.well-known/agent-card.json",  # Most common, used in examples
+            f"{agent_url}/.well-known/agent.json",       # HealthUniverse might use this
+            f"{agent_url}/.well-known/agentcard.json"    # Spec section 5.3 says this
+        ]
         
         client = await self._get_client()
-        response = await client.get(card_url, headers=self.headers)
-        response.raise_for_status()
+        last_error = None
         
-        card_data = response.json()
-        # Note: A2A spec requires camelCase in JSON (e.g., protocolVersion)
-        # but Python SDK converts to snake_case for attribute access
-        agent_card = AgentCard(**card_data)
+        for card_url in possible_endpoints:
+            try:
+                logger.info(f"Fetching agent card from {card_url}")
+                response = await client.get(card_url, headers=self.headers)
+                response.raise_for_status()
+                
+                card_data = response.json()
+                # Note: A2A spec requires camelCase in JSON (e.g., protocolVersion)
+                # but Python SDK converts to snake_case for attribute access
+                agent_card = AgentCard(**card_data)
+                
+                # Cache if enabled
+                if self.cache_agent_cards:
+                    self.agent_card_cache[agent_url] = agent_card
+                
+                logger.info(f"Fetched agent card: {agent_card.name} v{agent_card.version}")
+                return agent_card
+                
+            except Exception as e:
+                last_error = e
+                logger.debug(f"Failed to fetch from {card_url}: {e}")
+                continue
         
-        # Cache if enabled
-        if self.cache_agent_cards:
-            self.agent_card_cache[agent_url] = agent_card
-        
-        logger.info(f"Fetched agent card: {agent_card.name} v{agent_card.version}")
-        return agent_card
+        # If we get here, all attempts failed
+        raise last_error or Exception(f"Failed to fetch agent card from {agent_url}")
     
     async def call_agent(
         self,

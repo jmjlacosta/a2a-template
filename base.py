@@ -279,12 +279,12 @@ class A2AAgent(AgentExecutor, ABC):
         """
         return "You are a helpful AI assistant."
     
-    async def call_other_agent(self, agent_url: str, message: str, timeout: float = 30.0) -> str:
+    async def call_other_agent(self, agent_name_or_url: str, message: str, timeout: float = 30.0) -> str:
         """
         Helper method to call another A2A-compliant agent.
         
         Args:
-            agent_url: URL of the agent to call
+            agent_name_or_url: Agent name (from registry) or direct URL
             message: Message to send to the agent
             timeout: Request timeout in seconds
             
@@ -292,15 +292,35 @@ class A2AAgent(AgentExecutor, ABC):
             Response from the other agent
             
         Usage:
+            # Using agent name from config/agents.json
+            response = await self.call_other_agent(
+                "calculator-agent",
+                "What is 2+2?"
+            )
+            
+            # Or using direct URL
             response = await self.call_other_agent(
                 "https://other-agent.example.com",
                 "Hello from my agent!"
             )
         """
         try:
-            from utils.a2a_client import A2AAgentClient
+            from utils.a2a_client import A2AAgentClient, AgentRegistry
+            
+            # Determine if this is a URL or agent name
+            if agent_name_or_url.startswith(('http://', 'https://')):
+                # Direct URL provided
+                agent_url = agent_name_or_url
+            else:
+                # Look up agent name in registry
+                registry = AgentRegistry()
+                agent_url = registry.get_agent_url(agent_name_or_url)
+                if not agent_url:
+                    raise ValueError(f"Agent '{agent_name_or_url}' not found in registry. "
+                                   f"Available agents: {', '.join(registry.list_agents()) or 'none'}")
+            
             async with A2AAgentClient(timeout=timeout) as client:
                 return await client.call_agent(agent_url, message)
         except Exception as e:
-            self.logger.error(f"Failed to call agent at {agent_url}: {e}")
+            self.logger.error(f"Failed to call agent '{agent_name_or_url}': {e}")
             raise ServerError(error=e)
