@@ -361,8 +361,8 @@ class AgentRegistry:
     IMPORTANT: In HealthUniverse deployment, each agent runs in its own Kubernetes container.
     The agents.json file must be manually configured BEFORE deploying the orchestrator:
     1. Deploy all required agents first
-    2. Note each agent's xxx-xxx-xxx code from HealthUniverse
-    3. Update config/agents.json with agent IDs and URLs
+    2. Note each agent's xxx-xxx-xxx code from HealthUniverse (e.g., vey-vou-nam)
+    3. Update config/agents.json with URLs: https://apps.healthuniverse.com/xxx-xxx-xxx
     4. Commit and push to Git
     5. Deploy the orchestrator
     

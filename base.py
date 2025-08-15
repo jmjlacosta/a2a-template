@@ -298,9 +298,9 @@ class A2AAgent(AgentExecutor, ABC):
                 "What is 2+2?"
             )
             
-            # Or using direct URL
+            # Or using direct URL (e.g., HealthUniverse deployment)
             response = await self.call_other_agent(
-                "https://other-agent.example.com",
+                "https://apps.healthuniverse.com/vey-vou-nam",
                 "Hello from my agent!"
             )
         """

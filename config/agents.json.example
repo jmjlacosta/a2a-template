@@ -2,8 +2,8 @@
   "_comment": "IMPORTANT: HealthUniverse Deployment Process",
   "_deployment_steps": [
     "1. Deploy all individual agents to HealthUniverse first",
-    "2. Each agent will get a unique xxx-xxx-xxx code (e.g., abc-def-ghi)",
-    "3. The agent URL format is: https://{xxx-xxx-xxx}.agent.healthuniverse.com",
+    "2. Each agent will get a unique xxx-xxx-xxx code (e.g., vey-vou-nam)",
+    "3. The agent URL format is: https://apps.healthuniverse.com/xxx-xxx-xxx",
     "4. Update this file with the actual agent IDs and URLs",
     "5. Rename this file from agents.json.example to agents.json",
     "6. Commit and push changes to Git",
@@ -13,28 +13,28 @@
   "_note": "Each agent runs in its own Kubernetes container and cannot modify this file at runtime",
   "agents": {
     "grep-agent": {
-      "url": "https://xxx-xxx-xxx.agent.healthuniverse.com",
+      "url": "https://apps.healthuniverse.com/xxx-xxx-xxx",
       "name": "Grep Search Agent",
       "description": "Searches for patterns in files",
       "skills": ["search", "pattern-matching"],
-      "_replace_with": "Replace xxx-xxx-xxx with actual agent ID from HealthUniverse"
+      "_replace_with": "Replace xxx-xxx-xxx with actual agent ID from HealthUniverse (e.g., vey-vou-nam)"
     },
     "chunk-agent": {
-      "url": "https://yyy-yyy-yyy.agent.healthuniverse.com",
+      "url": "https://apps.healthuniverse.com/yyy-yyy-yyy",
       "name": "Document Chunk Agent",
       "description": "Splits documents into manageable chunks",
       "skills": ["document-processing", "chunking"],
       "_replace_with": "Replace yyy-yyy-yyy with actual agent ID from HealthUniverse"
     },
     "summarize-agent": {
-      "url": "https://zzz-zzz-zzz.agent.healthuniverse.com",
+      "url": "https://apps.healthuniverse.com/zzz-zzz-zzz",
       "name": "Summarization Agent",
       "description": "Creates summaries of text content",
       "skills": ["summarization", "text-analysis"],
       "_replace_with": "Replace zzz-zzz-zzz with actual agent ID from HealthUniverse"
     },
     "keyword-agent": {
-      "url": "https://aaa-bbb-ccc.agent.healthuniverse.com",
+      "url": "https://apps.healthuniverse.com/aaa-bbb-ccc",
       "name": "Keyword Extraction Agent",
       "description": "Extracts keywords and key phrases from text",
       "skills": ["keyword-extraction", "nlp"],
