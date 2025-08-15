@@ -1,7 +1,7 @@
 """
-Simplified A2A-compliant base class for agents.
-Leverages the A2A SDK instead of reimplementing functionality.
-Full A2A v0.3.0 compliance in ~200 lines.
+Full-featured A2A-compliant base class for agents.
+Supports LLM integration, tools, streaming, and agent-to-agent communication.
+Full A2A v0.3.0 compliance with Google ADK integration.
 """
 
 import os
@@ -11,13 +11,15 @@ from abc import ABC, abstractmethod
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
+from a2a.server.tasks import TaskUpdater
 from a2a.types import (
     AgentCard,
     AgentProvider,
     AgentCapabilities,
     AgentSkill,
     TextPart,
-    Part
+    Part,
+    TaskState
 )
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError, InvalidParamsError
@@ -98,13 +100,13 @@ class A2AAgent(AgentExecutor, ABC):
     
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """
-        Execute agent logic with proper A2A protocol handling.
+        Execute agent logic with full A2A protocol compliance.
         
-        This method:
-        1. Extracts the message from A2A protocol format
-        2. Processes the message using subclass implementation
-        3. Returns response in A2A protocol format
-        4. Handles errors with proper JSON-RPC error codes
+        Supports:
+        - Proper task state management (working, completed, failed)
+        - Streaming updates via TaskUpdater
+        - Tool-based execution via Google ADK
+        - Automatic LLM integration
         
         Args:
             context: Request context with message and metadata
@@ -119,22 +121,52 @@ class A2AAgent(AgentExecutor, ABC):
             
             self.logger.info(f"Processing message: {message[:100]}...")
             
-            # Process message using subclass implementation
-            response = await self.process_message(message)
+            # Get or create task (A2A spec requirement)
+            task = context.current_task
+            if not task:
+                self.logger.info("Creating new task")
+                task = new_task(context.message or new_agent_text_message("Processing..."))
+                await event_queue.enqueue_event(task)
             
-            # Send response in A2A protocol format
-            await event_queue.enqueue_event(
-                new_agent_text_message(response)
+            # Create TaskUpdater for streaming updates (A2A spec compliant)
+            updater = TaskUpdater(event_queue, task.id, task.context_id or task.id)
+            
+            # Set task to working state
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Processing your request...")
             )
             
-            self.logger.info("Message processed successfully")
+            # Check if agent has tools
+            tools = self.get_tools()
+            
+            if tools:
+                # Execute with Google ADK LlmAgent and tools
+                self.logger.info(f"Executing with {len(tools)} tools via Google ADK")
+                await self._execute_with_tools(message, updater, task.id)
+            else:
+                # Simple message processing (may still use LLM via process_message)
+                self.logger.info("Executing without tools")
+                response = await self.process_message(message)
+                
+                # Add response as artifact
+                await updater.add_artifact(
+                    [Part(root=TextPart(text=response))],
+                    name="response"
+                )
+            
+            # Mark task as completed
+            await updater.complete()
+            self.logger.info("Task completed successfully")
             
         except ServerError:
             # A2A SDK errors are already properly formatted
             raise
         except Exception as e:
-            # Wrap other errors in ServerError for proper JSON-RPC format
+            # Mark task as failed and raise error
             self.logger.error(f"Error processing message: {str(e)}")
+            if 'updater' in locals():
+                await updater.failed(new_agent_text_message(f"Error: {str(e)}"))
             raise ServerError(error=e)
     
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -144,6 +176,124 @@ class A2AAgent(AgentExecutor, ABC):
         """
         from a2a.utils.errors import UnsupportedOperationError
         raise ServerError(error=UnsupportedOperationError("Cancellation not supported"))
+    
+    async def _execute_with_tools(self, message: str, updater: TaskUpdater, session_id: str) -> None:
+        """
+        Execute using Google ADK LlmAgent with tools and streaming.
+        
+        Args:
+            message: The user's message
+            updater: TaskUpdater for sending status updates
+            session_id: Session/task ID for context
+        """
+        from google.adk.agents.llm_agent import LlmAgent
+        from google.adk.runners import Runner
+        from google.adk.artifacts import InMemoryArtifactService
+        from google.adk.sessions import InMemorySessionService
+        from google.adk.memory import InMemoryMemoryService
+        from google.genai import types
+        
+        try:
+            # Build LLM agent with tools
+            agent = LlmAgent(
+                model=self._get_llm_model(),
+                name=self.get_agent_name().lower().replace(" ", "_"),
+                instruction=self.get_system_instruction(),
+                tools=self.get_tools()
+            )
+            
+            # Create runner with session management
+            runner = Runner(
+                app_name=agent.name,
+                agent=agent,
+                artifact_service=InMemoryArtifactService(),
+                session_service=InMemorySessionService(),
+                memory_service=InMemoryMemoryService()
+            )
+            
+            # Get or create session
+            session = await runner.session_service.get_session(
+                app_name=agent.name,
+                user_id="user",
+                session_id=session_id
+            )
+            if not session:
+                session = await runner.session_service.create_session(
+                    app_name=agent.name,
+                    user_id="user",
+                    state={},
+                    session_id=session_id
+                )
+            
+            # Format message for Google ADK
+            formatted_message = types.Content(
+                role="user", 
+                parts=[types.Part(text=message)]
+            )
+            
+            # Stream response
+            full_response = ""
+            async for event in runner.run_async(
+                user_id="user",
+                session_id=session.id,
+                new_message=formatted_message
+            ):
+                if event.is_final_response():
+                    # Final response - extract text
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                full_response += part.text
+                        
+                        # Add as artifact
+                        await updater.add_artifact(
+                            [Part(root=TextPart(text=full_response))],
+                            name="response"
+                        )
+                else:
+                    # Intermediate update - send partial response
+                    if hasattr(event, "content") and event.content:
+                        partial = ""
+                        if hasattr(event.content, "parts"):
+                            for part in event.content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    partial += part.text
+                        
+                        if partial:
+                            # Send streaming update
+                            await updater.update_status(
+                                TaskState.working,
+                                new_agent_text_message(partial)
+                            )
+                            
+        except Exception as e:
+            self.logger.error(f"Error in tool execution: {str(e)}")
+            raise
+    
+    def _get_llm_model(self) -> str:
+        """
+        Get the LLM model to use based on available API keys.
+        
+        Returns:
+            Model string for Google ADK
+        """
+        # Check for Gemini/Google
+        if os.getenv("GOOGLE_API_KEY"):
+            return os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001")
+        # Check for OpenAI
+        elif os.getenv("OPENAI_API_KEY"):
+            from google.adk.models.lite_llm import LiteLlm
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            # Return LiteLLM wrapper for OpenAI
+            return LiteLlm(model=model)
+        # Check for Anthropic
+        elif os.getenv("ANTHROPIC_API_KEY"):
+            from google.adk.models.lite_llm import LiteLlm
+            model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+            # Return LiteLLM wrapper for Anthropic
+            return LiteLlm(model=model)
+        else:
+            raise ValueError("No LLM API key found. Set GOOGLE_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY")
     
     def _extract_message(self, context: RequestContext) -> Optional[str]:
         """
@@ -199,10 +349,34 @@ class A2AAgent(AgentExecutor, ABC):
     
     # Optional methods that subclasses can override
     
+    def get_tools(self) -> List[Any]:
+        """
+        Return list of tools for LLM-powered agents.
+        
+        Tools are internal implementation details (not exposed in AgentCard).
+        When tools are provided, the agent will use Google ADK's LlmAgent
+        with automatic tool execution and streaming support.
+        
+        Example:
+            from google.adk.tools import FunctionTool
+            
+            def search(query: str) -> str:
+                return f"Results for {query}"
+            
+            def get_tools(self):
+                return [FunctionTool(func=search)]
+        
+        Returns:
+            List of tools (e.g., Google ADK FunctionTools) or empty list
+        """
+        return []
+    
     def get_agent_skills(self) -> List[AgentSkill]:
         """
-        Return list of agent skills.
-        Override to provide specific skills.
+        Return list of agent skills for the AgentCard.
+        
+        Skills describe agent capabilities for discovery (A2A spec).
+        These are metadata only - not function definitions.
         
         Returns:
             List of AgentSkill objects (empty by default)
@@ -273,6 +447,9 @@ class A2AAgent(AgentExecutor, ABC):
     def get_system_instruction(self) -> str:
         """
         Override to provide custom system instruction for LLM agents.
+        
+        This instruction is used when tools are provided and the agent
+        uses Google ADK's LlmAgent for execution.
         
         Returns:
             System instruction for the LLM
