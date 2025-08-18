@@ -16,6 +16,7 @@ import time
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
+from google.adk.tools import FunctionTool
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -28,8 +29,35 @@ logging.basicConfig(
 )
 
 
+# Global agent instance for tool access
+_simple_agent_instance = None
+
+async def run_simple_pipeline(document: str) -> str:
+    """
+    Execute the simple medical document analysis pipeline.
+    
+    Processes documents through: keyword → grep → chunk → summarize.
+    
+    Args:
+        document: The medical document text to analyze
+        
+    Returns:
+        Medical document summary
+    """
+    global _simple_agent_instance
+    if _simple_agent_instance:
+        return await _simple_agent_instance.execute_pipeline(document)
+    return "Error: Agent not initialized"
+
+
 class SimpleOrchestratorAgent(A2AAgent):
     """Simple orchestrator that directly calls agents in sequence."""
+    
+    def __init__(self):
+        """Initialize the agent and set global instance for tool access."""
+        super().__init__()
+        global _simple_agent_instance
+        _simple_agent_instance = self
     
     def get_agent_name(self) -> str:
         """Return the agent's name."""
@@ -43,7 +71,29 @@ class SimpleOrchestratorAgent(A2AAgent):
             "Provides clear logging of inter-agent communication without complex tools."
         )
     
-    async def process_message(self, message: str) -> str:
+    def supports_streaming(self) -> bool:
+        """Enable streaming for meta-orchestrator compatibility."""
+        return True
+    
+    def get_system_instruction(self) -> str:
+        """System instruction for the LLM when using tools."""
+        return """You are a medical document analysis pipeline coordinator.
+
+When you receive a medical document, use the run_simple_pipeline tool to process it.
+
+The pipeline will:
+1. Generate search patterns (keyword agent)
+2. Search for matches (grep agent)
+3. Extract context chunks (chunk agent)
+4. Summarize findings (summarize agent)
+
+Always use the run_simple_pipeline tool for document analysis."""
+    
+    def get_tools(self) -> list:
+        """Return the pipeline execution tool."""
+        return [FunctionTool(func=run_simple_pipeline)]
+    
+    async def execute_pipeline(self, message: str) -> str:
         """
         Process the message through the pipeline in sequence.
         
@@ -202,6 +252,15 @@ Generate comprehensive patterns for all medical information."""
             ]
         
         return patterns[:20]  # Limit number of patterns
+    
+    async def process_message(self, message: str) -> str:
+        """
+        Process message - required by base class but not used.
+        
+        The actual processing happens via the tool function.
+        """
+        # This won't be called when tools are provided
+        return "Processing through simple pipeline..."
     
     def _parse_grep_results(self, grep_response: str) -> List[dict]:
         """Parse grep agent results into match info."""

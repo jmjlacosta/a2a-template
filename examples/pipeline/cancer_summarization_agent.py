@@ -16,6 +16,7 @@ import time
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
+from google.adk.tools import FunctionTool
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -28,8 +29,36 @@ logging.basicConfig(
 )
 
 
+# Global agent instance for tool access
+_agent_instance = None
+
+async def run_cancer_pipeline(document: str) -> str:
+    """
+    Execute the complete cancer document analysis pipeline.
+    
+    This tool processes medical documents through a 12-step pipeline
+    specifically designed for cancer-related information extraction.
+    
+    Args:
+        document: The medical document text to analyze
+        
+    Returns:
+        Comprehensive cancer-focused narrative
+    """
+    global _agent_instance
+    if _agent_instance:
+        return await _agent_instance.execute_pipeline(document)
+    return "Error: Agent not initialized"
+
+
 class CancerSummarizationAgent(A2AAgent):
     """Simple orchestrator for cancer document analysis using fixed pipeline sequence."""
+    
+    def __init__(self):
+        """Initialize the agent and set global instance for tool access."""
+        super().__init__()
+        global _agent_instance
+        _agent_instance = self
     
     def get_agent_name(self) -> str:
         """Return the agent's name."""
@@ -65,12 +94,40 @@ class CancerSummarizationAgent(A2AAgent):
         ]
     
     def supports_streaming(self) -> bool:
-        """This agent doesn't stream responses."""
-        return False
+        """Enable streaming for meta-orchestrator compatibility."""
+        return True
     
-    async def process_message(self, message: str) -> str:
+    def get_system_instruction(self) -> str:
+        """System instruction for the LLM when using tools."""
+        return """You are a cancer document analysis pipeline coordinator.
+
+When you receive a medical document, use the run_cancer_pipeline tool to process it through the complete 12-step analysis pipeline.
+
+The pipeline will:
+1. Generate cancer-specific search patterns
+2. Search the document for matches
+3. Extract context around matches
+4. Extract temporal information
+5. Group by clinical encounters
+6. Reconcile conflicts
+7. Extract structured summary
+8. Build timeline
+9. Check quality (with retries)
+10. Extract all medical entities
+11. Verify final data
+12. Synthesize narrative
+
+Always use the run_cancer_pipeline tool for any medical document analysis."""
+    
+    def get_tools(self) -> list:
+        """Return the pipeline execution tool."""
+        return [FunctionTool(func=run_cancer_pipeline)]
+    
+    async def execute_pipeline(self, message: str) -> str:
         """
-        Process the cancer document through the complete pipeline.
+        Execute the cancer document analysis pipeline.
+        
+        This method is called by the tool function to do the actual work.
         
         Args:
             message: The input medical document text
@@ -427,6 +484,15 @@ Focus on:
                 unique[line_num] = match
         
         return list(unique.values())
+    
+    async def process_message(self, message: str) -> str:
+        """
+        Process message - required by base class but not used.
+        
+        The actual processing happens via the tool function.
+        """
+        # This won't be called when tools are provided
+        return "Processing through cancer pipeline..."
 
 
 # Module-level app creation (required for deployment)
