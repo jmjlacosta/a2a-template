@@ -1,0 +1,29 @@
+{
+  "agents": {
+    "grep": {
+      "url": "https://apps.healthuniverse.com/cft-uez-ier",
+      "name": "Pattern Search Agent",
+      "description": "Searches documents for medical patterns using regex"
+    },
+    "keyword": {
+      "url": "https://apps.healthuniverse.com/ouh-pct-lig",
+      "name": "Pattern Generator",
+      "description": "Generates search patterns from document previews"
+    },
+    "chunk": {
+      "url": "https://apps.healthuniverse.com/eib-cjb-myu",
+      "name": "Context Extractor",
+      "description": "Extracts meaningful text chunks from documents"
+    },
+    "summarize": {
+      "url": "https://apps.healthuniverse.com/aqp-hlp-lmc",
+      "name": "Medical Summarizer",
+      "description": "Analyzes and summarizes medical text"
+    },
+    "orchestrator": {
+      "url": "http://localhost:8006",
+      "name": "Pipeline Orchestrator",
+      "description": "Coordinates the document analysis pipeline"
+    }
+  }
+}
