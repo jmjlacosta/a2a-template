@@ -173,6 +173,7 @@ class A2AAgentClient:
         }
         
         logger.info(f"Calling agent {agent_card.name} with message")
+        logger.debug(f"📤 Sending JSON-RPC request: {json.dumps(request, indent=2)}")
         
         client = await self._get_client()
         response = await client.post(

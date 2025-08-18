@@ -19,11 +19,6 @@
       "url": "https://apps.healthuniverse.com/aqp-hlp-lmc",
       "name": "Medical Summarizer",
       "description": "Analyzes and summarizes medical text"
-    },
-    "orchestrator": {
-      "url": "http://localhost:8006",
-      "name": "Pipeline Orchestrator",
-      "description": "Coordinates the document analysis pipeline"
     }
   }
 }

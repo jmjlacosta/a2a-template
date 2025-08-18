@@ -496,8 +496,14 @@ class A2AAgent(AgentExecutor, ABC):
                     raise ValueError(f"Agent '{agent_name_or_url}' not found in registry. "
                                    f"Available agents: {', '.join(registry.list_agents()) or 'none'}")
             
+            self.logger.info(f"📤 Calling agent at {agent_url}")
+            self.logger.info(f"📝 Message: {message[:200]}..." if len(message) > 200 else f"📝 Message: {message}")
+            
             async with A2AAgentClient(timeout=timeout) as client:
-                return await client.call_agent(agent_url, message)
+                response = await client.call_agent(agent_url, message)
+                
+            self.logger.info(f"📥 Response from {agent_url}: {response[:200]}..." if len(str(response)) > 200 else f"📥 Response: {response}")
+            return response
         except Exception as e:
             self.logger.error(f"Failed to call agent '{agent_name_or_url}': {e}")
             raise ServerError(error=e)

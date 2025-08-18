@@ -487,6 +487,86 @@ def analyze_data(data: str, criteria: List[str]) -> str:
     return analysis_results
 ```
 
+## Advanced Topics
+
+### Inter-Agent Communication
+
+Agents can call other agents using the `call_other_agent` method:
+
+```python
+async def process_message(self, message: str) -> str:
+    # Call another agent
+    response = await self.call_other_agent("agent_name", "message")
+    return response
+```
+
+**Important**: Configure agent URLs in `config/agents.json`:
+```json
+{
+  "agents": {
+    "agent_name": {
+      "url": "http://localhost:8002"
+    }
+  }
+}
+```
+
+### Async Tool Functions
+
+Google ADK's `FunctionTool` supports async functions natively:
+
+```python
+# Async functions work directly with FunctionTool
+async def my_async_tool(param: str) -> str:
+    """Async tool function."""
+    result = await some_async_operation()
+    return result
+
+# No special handling needed
+my_tool = FunctionTool(func=my_async_tool)
+```
+
+**Important**: Do NOT use `asyncio.run()` in tool functions - the agent's `execute()` method already runs in an async context.
+
+### Handling Single-Line Documents
+
+For agents processing documents (like medical records that may be single paragraphs):
+
+1. **Detect single-line documents**:
+```python
+lines = document.split('\n')
+is_single_line = len(lines) == 1
+```
+
+2. **Deduplicate processing**:
+```python
+# Don't process the same line multiple times
+unique_lines = {}
+for match in matches:
+    line_num = match.get("line_number", 1)
+    if line_num not in unique_lines:
+        unique_lines[line_num] = match
+```
+
+3. **Smart chunking strategies**:
+- For short single-line docs (<2000 chars): Process entire document once
+- For long single-line docs: Extract segments around key matches
+- Limit chunk extraction to avoid redundant processing
+
+### Orchestrator Patterns
+
+Two orchestration approaches:
+
+1. **Dynamic Orchestrator**: Uses LLM with tools to decide agent calling sequence
+   - More flexible, adapts to different queries
+   - Higher latency due to LLM decision-making
+   - Better for complex, varied requests
+
+2. **Simple/Fixed Orchestrator**: Direct sequential pipeline execution
+   - Faster execution (no LLM decisions)
+   - Predictable behavior
+   - Better for well-defined workflows
+
 ## Troubleshooting
 
 ### Issue: "No LLM API key found"
@@ -494,6 +574,9 @@ def analyze_data(data: str, criteria: List[str]) -> str:
 - `GOOGLE_API_KEY`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
+
+### Issue: "asyncio.run() cannot be called from a running event loop"
+**Solution**: Your tool functions are trying to create a new event loop. Use async functions directly without `asyncio.run()`.
 
 ### Issue: "Module not found"
 **Solution**: Ensure proper path setup:

@@ -125,6 +125,21 @@ if __name__ == "__main__":
 
 ## LLM Integration
 
+### Automatic LLM Detection
+
+The template includes **automatic LLM provider detection**! Just set any of these environment variables and your agent will automatically use the right provider:
+
+```bash
+# Option 1: Use Claude (Anthropic)
+export ANTHROPIC_API_KEY="your-anthropic-key"
+
+# Option 2: Use GPT-3.5/GPT-4 (OpenAI)
+export OPENAI_API_KEY="your-openai-key"
+
+# Option 3: Use Gemini (Google)
+export GOOGLE_API_KEY="your-google-key"
+```
+
 ### Multi-Provider Support
 
 The template automatically detects and configures LLM providers based on available API keys:
@@ -197,6 +212,35 @@ def get_tools(self) -> List[Any]:
     """Return list of tools for the agent."""
     # Even if no tools needed, must return empty list
     return []
+```
+
+## Example Agents
+
+### Pipeline Examples
+
+The `examples/pipeline/` directory contains a complete medical document analysis pipeline:
+
+| Agent | Port | Description |
+|-------|------|-------------|
+| **Keyword Agent** | 8002 | Generates regex patterns for medical terms |
+| **Grep Agent** | 8003/8013 | Searches documents using patterns |
+| **Chunk Agent** | 8004 | Extracts context around matches |
+| **Summarize Agent** | 8005 | Analyzes and summarizes chunks |
+| **Orchestrator Agent** | 8006 | Coordinates the pipeline (LLM-driven) |
+| **Simple Orchestrator** | 8008 | Fixed sequence pipeline (no LLM) |
+
+### Running the Pipeline
+
+```bash
+# Start all agents
+python examples/pipeline/keyword_agent.py &
+PORT=8013 python examples/pipeline/grep_agent.py &
+python examples/pipeline/chunk_agent.py &
+python examples/pipeline/summarize_agent.py &
+python examples/pipeline/orchestrator_agent.py &
+
+# Test the pipeline
+python tests/test_orchestrator.py
 ```
 
 ## Deployment
