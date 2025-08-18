@@ -17,8 +17,9 @@ from google.adk.tools import FunctionTool
 from tools.temporal_tools import (
     extract_temporal_information,
     consolidate_temporal_data,
-    create_temporal_report,
-    analyze_temporal_patterns
+    analyze_temporal_patterns,
+    tag_timeline_segments,
+    normalize_dates
 )
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -79,10 +80,10 @@ When analyzing documents, you should:
    - Identify temporal sequences ("following chemotherapy", "before surgery")
    - Maintain temporal context even when dates are missing
 
-5. **CREATE TEMPORAL REPORT:**
-   - Summarize all temporal findings
-   - Highlight temporal patterns
-   - Note any temporal inconsistencies
+5. **TAG AND ORGANIZE:**
+   - Tag timeline segments for chronological ordering
+   - Normalize various date formats
+   - Create structured timeline
 
 CRITICAL RULES:
 - NEVER create synthetic or fake dates
@@ -93,8 +94,9 @@ CRITICAL RULES:
 Use the provided tools to:
 1. extract_temporal_information - Extract dates and temporal data from text
 2. consolidate_temporal_data - Consolidate multiple temporal extractions
-3. create_temporal_report - Generate a comprehensive temporal report
-4. analyze_temporal_patterns - Identify patterns in temporal data
+3. analyze_temporal_patterns - Identify patterns in temporal data
+4. tag_timeline_segments - Tag and organize timeline segments
+5. normalize_dates - Normalize various date formats to standard format
 
 Return structured temporal data that accurately represents the document's temporal information or lack thereof."""
     
@@ -103,8 +105,9 @@ Return structured temporal data that accurately represents the document's tempor
         return [
             FunctionTool(func=extract_temporal_information),
             FunctionTool(func=consolidate_temporal_data),
-            FunctionTool(func=create_temporal_report),
-            FunctionTool(func=analyze_temporal_patterns)
+            FunctionTool(func=analyze_temporal_patterns),
+            FunctionTool(func=tag_timeline_segments),
+            FunctionTool(func=normalize_dates)
         ]
     
     def get_agent_skills(self) -> List[AgentSkill]:

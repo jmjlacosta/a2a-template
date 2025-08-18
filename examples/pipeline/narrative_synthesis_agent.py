@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
 from google.adk.tools import FunctionTool
-from tools.narrative_synthesis_tools import NARRATIVE_TOOLS
+from tools.narrative_synthesis_tools import NARRATIVE_SYNTHESIS_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -47,7 +47,7 @@ Use the provided tools to synthesize comprehensive medical narratives."""
     
     def get_tools(self) -> List:
         """Return the agent's tools."""
-        return NARRATIVE_TOOLS
+        return NARRATIVE_SYNTHESIS_TOOLS
     
     def supports_streaming(self) -> bool:
         """Enable streaming for real-time processing."""
