@@ -64,6 +64,11 @@
       "url": "http://localhost:8018",
       "name": "Narrative Synthesis Agent",
       "description": "Synthesizes information into coherent medical narrative"
+    },
+    "cancer_summarization": {
+      "url": "http://localhost:8009",
+      "name": "Cancer Summarization Pipeline",
+      "description": "Fixed-sequence orchestrator for comprehensive cancer document analysis"
     }
   }
 }
