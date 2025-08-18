@@ -3,6 +3,8 @@ Orchestrator tools for coordinating the medical document analysis pipeline.
 Following nutrition_example.py pattern with Google ADK FunctionTool.
 """
 import json
+import os
+import httpx
 from typing import Dict, List, Any, Optional
 from google.adk.tools import FunctionTool
 import logging
@@ -127,57 +129,6 @@ Create a detailed plan that maximizes the chance of satisfying the user's reques
     return json.dumps(planning_request)
 
 
-def coordinate_agents(
-    execution_plan: Dict[str, Any],
-    document_content: str,
-    file_path: str = "document.txt"
-) -> str:
-    """
-    Coordinate the execution of multiple agents in the pipeline.
-    
-    Args:
-        execution_plan: The plan for pipeline execution
-        document_content: The document content to analyze
-        file_path: Path/name of the document
-        
-    Returns:
-        JSON string with coordination instructions
-    """
-    coordination_request = {
-        "action": "coordinate_agents",
-        "plan": execution_plan,
-        "document_info": {
-            "content_length": len(document_content),
-            "file_path": file_path,
-            "preview": document_content[:200]
-        },
-        "instructions": """Coordinate the agent pipeline execution:
-
-1. Keyword Agent:
-   - Call with document preview and focus areas
-   - Get search patterns for the document
-
-2. Grep Agent:
-   - Use patterns from keyword agent
-   - Search the document content
-   - Get match locations
-
-3. Chunk Agent:
-   - Extract context around matches
-   - Use appropriate chunk sizes
-   - Preserve semantic units
-
-4. Summarize Agent:
-   - Process extracted chunks
-   - Generate summaries and extract entities
-   - Score relevance
-
-Use the call_other_agent method to communicate with each agent.
-Pass results from one agent to the next in the pipeline.
-Handle any errors gracefully and continue with available results."""
-    }
-    
-    return json.dumps(coordination_request)
 
 
 def synthesize_final_response(
@@ -348,7 +299,6 @@ Provide specific optimizations for this request."""
 # Create FunctionTool instances for Google ADK
 understand_request_tool = FunctionTool(func=understand_user_request)
 plan_execution_tool = FunctionTool(func=plan_pipeline_execution)
-coordinate_tool = FunctionTool(func=coordinate_agents)
 synthesize_response_tool = FunctionTool(func=synthesize_final_response)
 handle_errors_tool = FunctionTool(func=handle_pipeline_errors)
 optimize_performance_tool = FunctionTool(func=optimize_pipeline_performance)
@@ -357,7 +307,6 @@ optimize_performance_tool = FunctionTool(func=optimize_pipeline_performance)
 ORCHESTRATOR_TOOLS = [
     understand_request_tool,
     plan_execution_tool,
-    coordinate_tool,
     synthesize_response_tool,
     handle_errors_tool,
     optimize_performance_tool
