@@ -19,7 +19,6 @@ from a2a.types import (
     Part,
     TextPart
 )
-from a2a.utils import new_task, new_agent_text_message
 
 logger = logging.getLogger(__name__)
 
@@ -139,27 +138,38 @@ class A2AAgentClient:
         Returns:
             Agent's text response
         """
+        import uuid
+        
         # Fetch agent card
         agent_card = await self.fetch_agent_card(agent_url)
         
-        # Create message
-        msg = new_agent_text_message(message)
+        # Create A2A-compliant message structure
+        message_id = str(uuid.uuid4())
         
-        # Create task
-        task = new_task(msg)
+        # Build message according to A2A spec
+        msg_dict = {
+            "messageId": message_id,
+            "role": "user",
+            "parts": [
+                {
+                    "kind": "text",
+                    "text": message
+                }
+            ]
+        }
+        
+        # Add optional context_id if provided
         if context_id:
-            task.context_id = context_id
+            msg_dict["contextId"] = context_id
         
-        # Send JSON-RPC request
+        # Send JSON-RPC request following A2A spec
         request = {
             "jsonrpc": "2.0",
             "method": "message/send",
             "params": {
-                "message": msg.dict(),
-                "task_id": task.id,
-                "context_id": context_id
+                "message": msg_dict
             },
-            "id": datetime.now().isoformat()
+            "id": str(uuid.uuid4())
         }
         
         logger.info(f"Calling agent {agent_card.name} with message")
@@ -277,6 +287,8 @@ class A2AAgentClient:
         Yields:
             Response chunks as they arrive
         """
+        import uuid
+        
         # Fetch agent card
         agent_card = await self.fetch_agent_card(agent_url)
         
@@ -287,22 +299,33 @@ class A2AAgentClient:
             yield result
             return
         
-        # Create message and task
-        msg = new_agent_text_message(message)
-        task = new_task(msg)
+        # Create A2A-compliant message structure
+        message_id = str(uuid.uuid4())
+        
+        # Build message according to A2A spec
+        msg_dict = {
+            "messageId": message_id,
+            "role": "user",
+            "parts": [
+                {
+                    "kind": "text",
+                    "text": message
+                }
+            ]
+        }
+        
+        # Add optional context_id if provided
         if context_id:
-            task.context_id = context_id
+            msg_dict["contextId"] = context_id
         
         # Send streaming request
         request = {
             "jsonrpc": "2.0",
             "method": "message/stream",
             "params": {
-                "message": msg.dict(),
-                "task_id": task.id,
-                "context_id": context_id
+                "message": msg_dict
             },
-            "id": datetime.now().isoformat()
+            "id": str(uuid.uuid4())
         }
         
         logger.info(f"Streaming from agent {agent_card.name}")
