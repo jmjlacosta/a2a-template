@@ -5,6 +5,7 @@ Full A2A v0.3.0 compliance with Google ADK integration.
 """
 
 import os
+import json
 import logging
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
@@ -119,6 +120,15 @@ class A2AAgent(AgentExecutor, ABC):
             if not message:
                 raise InvalidParamsError("No message provided in request")
             
+            # Log incoming message if enabled
+            import os
+            if os.getenv("SHOW_AGENT_CALLS", "false").lower() == "true":
+                self.logger.info("="*60)
+                self.logger.info(f"📨 INCOMING REQUEST TO: {self.get_agent_name()} (port {os.getenv('PORT', 'unknown')})")
+                self.logger.info(f"📝 MESSAGE ({len(message)} chars):")
+                self.logger.info(f"   {message[:500]}..." if len(message) > 500 else f"   {message}")
+                self.logger.info("="*60)
+            
             self.logger.info(f"Processing message: {message[:100]}...")
             
             # Get or create task (A2A spec requirement)
@@ -140,14 +150,16 @@ class A2AAgent(AgentExecutor, ABC):
             # Check if agent has tools
             tools = self.get_tools()
             
-            if tools:
-                # Execute with Google ADK LlmAgent and tools
+            self.logger.info(f"Decision: has_tools={bool(tools)}, num_tools={len(tools) if tools else 0}")
+            
+            if tools and len(tools) > 0:
+                # Use LLM with tools - A2A compliant path
                 self.logger.info(f"Executing with {len(tools)} tools via Google ADK")
                 await self._execute_with_tools(message, updater, task.id)
             else:
-                # Simple message processing (may still use LLM via process_message)
-                self.logger.info("Executing without tools")
-                response = await self.process_message(message)
+                # No tools = use process_message + LLM
+                self.logger.info("Executing with LLM (no tools)")
+                response = await self._execute_with_llm_no_tools(message, updater)
                 
                 # Add response as artifact
                 await updater.add_artifact(
@@ -176,6 +188,99 @@ class A2AAgent(AgentExecutor, ABC):
         """
         from a2a.utils.errors import UnsupportedOperationError
         raise ServerError(error=UnsupportedOperationError("Cancellation not supported"))
+    
+    async def _execute_with_llm_no_tools(self, message: str, updater: TaskUpdater) -> str:
+        """
+        Execute using LLM directly without tools.
+        
+        This method is called when the agent has no tools defined.
+        It formats the message with system instruction and gets LLM response.
+        
+        Args:
+            message: The user's message
+            updater: TaskUpdater for sending status updates
+            
+        Returns:
+            The LLM's response as a string
+        """
+        try:
+            # Process the message through the agent's process_message first
+            # This allows agents to format/prepare the input
+            formatted_message = await self.process_message(message)
+            
+            # Get system instruction
+            system_instruction = self.get_system_instruction()
+            
+            # Check which LLM provider to use
+            if os.getenv("GOOGLE_API_KEY"):
+                # Use Google Gemini
+                import google.generativeai as genai
+                genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+                
+                model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001")
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_instruction
+                )
+                
+                response = model.generate_content(formatted_message)
+                if response and response.text:
+                    return response.text
+                else:
+                    return "No response generated"
+                    
+            elif os.getenv("OPENAI_API_KEY"):
+                # Use OpenAI via litellm
+                from litellm import completion
+                
+                model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                
+                # Create messages with system instruction
+                messages = [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": formatted_message}
+                ]
+                
+                response = completion(
+                    model=model_name,
+                    messages=messages,
+                    api_key=os.getenv("OPENAI_API_KEY")
+                )
+                
+                if response and response.choices:
+                    return response.choices[0].message.content
+                else:
+                    return "No response generated"
+                    
+            elif os.getenv("ANTHROPIC_API_KEY"):
+                # Use Anthropic via litellm
+                from litellm import completion
+                
+                model_name = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+                
+                # Create messages with system instruction
+                messages = [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": formatted_message}
+                ]
+                
+                response = completion(
+                    model=model_name,
+                    messages=messages,
+                    api_key=os.getenv("ANTHROPIC_API_KEY")
+                )
+                
+                if response and response.choices:
+                    return response.choices[0].message.content
+                else:
+                    return "No response generated"
+                    
+            else:
+                raise ValueError("No LLM API key found. Set GOOGLE_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY")
+                
+        except Exception as e:
+            self.logger.error(f"Error in LLM execution: {str(e)}")
+            raise
     
     async def _execute_with_tools(self, message: str, updater: TaskUpdater, session_id: str) -> None:
         """
@@ -297,30 +402,61 @@ class A2AAgent(AgentExecutor, ABC):
     
     def _extract_message(self, context: RequestContext) -> Optional[str]:
         """
-        Extract text message from A2A protocol format.
+        Extract message from A2A protocol format.
         
-        Handles both message part formats:
-        - part.root.text (standard format)
-        - part.text (alternative format)
+        Handles multiple part formats:
+        - TextPart: part.root.text (standard text format)
+        - DataPart: part.root.data (JSON/structured data format)
+        - Alternative: part.text (backwards compatibility)
+        
+        For DataPart (JSON), converts to string representation.
         
         Args:
             context: Request context containing message
             
         Returns:
-            Extracted text message or None if no message found
+            Extracted message as string (JSON string for DataPart) or None
         """
+        import json
+        from a2a.types import DataPart
+        
         if not context.message or not context.message.parts:
             return None
         
+        extracted_parts = []
+        
         for part in context.message.parts:
-            # Check for standard format (part.root.text)
-            if hasattr(part, 'root') and isinstance(part.root, TextPart):
-                return part.root.text
+            # Check for standard TextPart format (part.root.text)
+            if hasattr(part, 'root'):
+                if isinstance(part.root, TextPart):
+                    extracted_parts.append(part.root.text)
+                elif isinstance(part.root, DataPart):
+                    # Handle DataPart with JSON data (A2A spec 6.5.3)
+                    # Convert to JSON string for processing
+                    data = part.root.data
+                    if isinstance(data, dict) or isinstance(data, list):
+                        extracted_parts.append(json.dumps(data))
+                    else:
+                        extracted_parts.append(str(data))
             # Check for alternative format (part.text)
             elif hasattr(part, 'text'):
-                return part.text
+                extracted_parts.append(part.text)
+            # Check for direct DataPart
+            elif hasattr(part, 'data'):
+                data = part.data
+                if isinstance(data, dict) or isinstance(data, list):
+                    extracted_parts.append(json.dumps(data))
+                else:
+                    extracted_parts.append(str(data))
         
-        return None
+        # Combine all extracted parts
+        if not extracted_parts:
+            return None
+        elif len(extracted_parts) == 1:
+            return extracted_parts[0]
+        else:
+            # Multiple parts - join with newline
+            return "\n".join(extracted_parts)
     
     # Abstract methods that subclasses must implement
     
@@ -496,13 +632,31 @@ class A2AAgent(AgentExecutor, ABC):
                     raise ValueError(f"Agent '{agent_name_or_url}' not found in registry. "
                                    f"Available agents: {', '.join(registry.list_agents()) or 'none'}")
             
-            self.logger.info(f"📤 Calling agent at {agent_url}")
-            self.logger.info(f"📝 Message: {message[:200]}..." if len(message) > 200 else f"📝 Message: {message}")
+            # Enhanced logging for inter-agent communication
+            import os
+            if os.getenv("SHOW_AGENT_CALLS", "false").lower() == "true":
+                self.logger.info("="*60)
+                self.logger.info(f"🔗 INTER-AGENT CALL")
+                self.logger.info(f"📤 FROM: {self.get_agent_name()} (port {os.getenv('PORT', 'unknown')})")
+                self.logger.info(f"📍 TO: {agent_name_or_url} -> {agent_url}")
+                self.logger.info(f"📝 MESSAGE ({len(message)} chars):")
+                self.logger.info(f"   {message[:500]}..." if len(message) > 500 else f"   {message}")
+                self.logger.info("="*60)
+            else:
+                self.logger.info(f"📤 Calling agent at {agent_url}")
             
             async with A2AAgentClient(timeout=timeout) as client:
                 response = await client.call_agent(agent_url, message)
-                
-            self.logger.info(f"📥 Response from {agent_url}: {response[:200]}..." if len(str(response)) > 200 else f"📥 Response: {response}")
+            
+            if os.getenv("SHOW_AGENT_CALLS", "false").lower() == "true":
+                self.logger.info("="*60)
+                self.logger.info(f"📥 RESPONSE FROM: {agent_name_or_url}")
+                self.logger.info(f"📍 TO: {self.get_agent_name()}")
+                self.logger.info(f"📝 RESPONSE ({len(str(response))} chars):")
+                self.logger.info(f"   {str(response)[:500]}..." if len(str(response)) > 500 else f"   {response}")
+                self.logger.info("="*60)
+            else:
+                self.logger.info(f"📥 Response from {agent_url}: {response[:200]}..." if len(str(response)) > 200 else f"📥 Response: {response}")
             return response
         except Exception as e:
             self.logger.error(f"Failed to call agent '{agent_name_or_url}': {e}")
