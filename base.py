@@ -236,8 +236,11 @@ class A2AAgent(AgentExecutor, ABC):
             # Subclasses can override this to implement actual cancellation logic
             self.logger.info(f"Attempting to cancel task {task_id}")
             
-            # Create updater for the task
-            updater = TaskUpdater(event_queue, task_id, task_id)
+            # Get consistent context ID for all operations
+            ctx_id = getattr(context, 'contextId', getattr(context, 'context_id', task_id))
+            
+            # Create updater for the task with consistent context ID
+            updater = TaskUpdater(event_queue, task_id, ctx_id)
             
             # Signal task is being canceled (spec state: "canceled")
             await updater.update_status(
@@ -246,7 +249,6 @@ class A2AAgent(AgentExecutor, ABC):
             )
             
             # Emit a Task event with canceled state (spec-compliant structure)
-            ctx_id = getattr(context, 'contextId', getattr(context, 'context_id', task_id))
             canceled_task = Task(
                 id=task_id,
                 contextId=ctx_id,
