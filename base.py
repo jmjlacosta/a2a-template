@@ -22,7 +22,9 @@ from a2a.types import (
     Part,
     TaskState,
     DataPart,
-    Task
+    Task,
+    TaskStatus,
+    Message
 )
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError, InvalidParamsError
@@ -105,7 +107,7 @@ class A2AAgent(AgentExecutor, ABC):
             # Capabilities
             capabilities=AgentCapabilities(
                 streaming=self.supports_streaming(),
-                push_notifications=self.supports_push_notifications()
+                pushNotifications=self.supports_push_notifications()
             ),
             
             # Skills (optional but recommended)
@@ -181,7 +183,7 @@ class A2AAgent(AgentExecutor, ABC):
                 new_agent_text_message("Task completed successfully")
             )
             
-        except ServerError:
+        except ServerError as e:
             # A2A SDK errors are already properly formatted
             if task:
                 updater = TaskUpdater(event_queue, task.id, task.context_id or task.id)
@@ -237,11 +239,22 @@ class A2AAgent(AgentExecutor, ABC):
                 new_agent_text_message(f"Task {task_id} has been canceled")
             )
             
-            # Emit a Task event with canceled state
+            # Emit a Task event with canceled state (spec-compliant structure)
             canceled_task = Task(
                 id=task_id,
-                state=TaskState.canceled,
-                message=new_agent_text_message("Task canceled by user request")
+                contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                status=TaskStatus(
+                    state=TaskState.canceled,
+                    message=Message(
+                        role="agent",
+                        parts=[TextPart(kind="text", text="Task canceled by user request")],
+                        messageId=f"cancel-{task_id}",
+                        taskId=task_id,
+                        contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                        kind="message"
+                    )
+                ),
+                kind="task"
             )
             await event_queue.enqueue_event(canceled_task)
             
@@ -252,8 +265,19 @@ class A2AAgent(AgentExecutor, ABC):
             # Even if cancellation fails, we should return a task with appropriate state
             failed_task = Task(
                 id=task_id,
-                state=TaskState.failed,
-                message=new_agent_text_message(f"Cancellation failed: {str(e)}")
+                contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                status=TaskStatus(
+                    state=TaskState.failed,
+                    message=Message(
+                        role="agent",
+                        parts=[TextPart(kind="text", text=f"Cancellation failed: {str(e)}")],
+                        messageId=f"cancel-failed-{task_id}",
+                        taskId=task_id,
+                        contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                        kind="message"
+                    )
+                ),
+                kind="task"
             )
             await event_queue.enqueue_event(failed_task)
             raise ServerError(error=e)
