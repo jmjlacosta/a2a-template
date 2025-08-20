@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
 from google.adk.tools import FunctionTool
+# GITHUB ISSUE FIX: Using fixed tools with simplified signatures for Google ADK
 from tools.unified_extractor_tools import UNIFIED_EXTRACTOR_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler

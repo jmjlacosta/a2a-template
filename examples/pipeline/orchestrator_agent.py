@@ -30,6 +30,13 @@ from a2a.types import AgentSkill
 class OrchestratorAgent(A2AAgent):
     """LLM-powered orchestrator for the medical document analysis pipeline."""
     
+    def __init__(self):
+        """Initialize the agent and set global reference for tools."""
+        super().__init__()
+        # Set global reference so coordinate_agents tool can access this instance
+        from tools.orchestrator_tools import set_orchestrator_agent
+        set_orchestrator_agent(self)
+    
     def get_agent_name(self) -> str:
         """Return the agent's name."""
         return "Pipeline Orchestrator"
@@ -39,7 +46,7 @@ class OrchestratorAgent(A2AAgent):
         return (
             "LLM-powered orchestrator that coordinates a complete medical document analysis pipeline. "
             "Understands natural language requests, plans execution strategy, coordinates multiple "
-            "specialized agents (keyword, grep, chunk, summarize), and synthesizes results into "
+            "specialized agents in the medical pipeline, and synthesizes results into "
             "comprehensive responses. Handles errors gracefully and optimizes pipeline performance."
         )
     
@@ -49,53 +56,61 @@ class OrchestratorAgent(A2AAgent):
     
     def get_system_instruction(self) -> str:
         """Return the system instruction for orchestration."""
-        return """You are the orchestrator of a medical document analysis pipeline. Your role is to understand user requests, coordinate multiple agents, and synthesize results.
+        return """You are the orchestrator of a medical document analysis pipeline. Your primary role is to COORDINATE MULTIPLE AGENTS to analyze medical documents.
 
-IMPORTANT: Agent Communication
-You have access to the call_other_agent method to communicate with other agents:
-- Use await self.call_other_agent("agent_name", "message") to call agents
-- Available agents: keyword, grep, chunk, summarize
-- Agents are configured in config/agents.json
+CRITICAL: YOU MUST USE THE coordinate_agents TOOL TO CALL OTHER AGENTS
+- DO NOT generate analysis yourself
+- DO NOT pretend to call agents
+- DO NOT create mock responses
+- YOU MUST use the coordinate_agents tool which will actually call the agents
 
-Pipeline Flow:
-1. Understand the user's request using the understand_user_request tool
-2. Plan the execution strategy with plan_pipeline_execution
-3. Coordinate agents using coordinate_agents:
-   - Call keyword agent to generate search patterns
-   - Call grep agent to search the document
-   - Call chunk agent to extract context
-   - Call summarize agent to analyze chunks
-4. Synthesize results with synthesize_final_response
-5. Handle any errors with handle_pipeline_errors
+Available Pipeline Agents (all 12 must be used for full analysis):
+1. keyword - Generates search patterns from document preview
+2. grep - Searches document using patterns
+3. chunk - Extracts context around matches
+4. temporal_tagging - Extracts temporal information
+5. encounter_grouping - Groups content by clinical encounters
+6. reconciliation - Reconciles conflicting information
+7. summary_extractor - Extracts structured summaries
+8. timeline_builder - Builds chronological timelines
+9. checker - Verifies accuracy and consistency
+10. unified_extractor - Extracts all medical entities
+11. unified_verifier - Performs final verification
+12. narrative_synthesis - Creates coherent narrative
 
-Key Responsibilities:
-- Parse natural language requests to understand intent
-- Determine optimal analysis strategies
-- Coordinate agent execution in the correct sequence
-- Pass results between agents appropriately
-- Synthesize comprehensive responses from pipeline results
-- Handle errors gracefully with recovery strategies
-- Learn from execution history to optimize performance
+REQUIRED Pipeline Flow:
+1. Use understand_request tool to parse user request
+2. Use plan_pipeline_execution tool to create execution plan
+3. USE coordinate_agents TOOL TO EXECUTE THE PIPELINE:
+   - This tool will call agents in sequence
+   - Pass document and parameters
+   - Collect responses from each agent
+4. Use synthesize_results tool to combine agent responses
+5. Use handle_pipeline_error if any errors occur
 
-When calling agents:
-- Keyword Agent: Send document preview and focus areas
-- Grep Agent: Send patterns and document content
-- Chunk Agent: Send match information and document content
-- Summarize Agent: Send extracted chunks for analysis
+IMPORTANT: The coordinate_agents tool is your PRIMARY tool
+- It handles all inter-agent communication
+- It manages timeouts and retries
+- It collects and returns all agent responses
+- YOU MUST USE IT - do not try to analyze documents yourself
 
-Error Handling:
-- If an agent fails, use partial results when possible
-- Provide fallback strategies
-- Always try to deliver useful information to the user
-- Explain limitations clearly
+When using coordinate_agents, provide:
+- document: The full document text
+- agents_to_use: List of agent names to use (or "all" for full pipeline)
+- execution_mode: "sequential" or "parallel" where applicable
 
-Result Synthesis:
-- Combine results from all agents coherently
-- Highlight the most relevant findings
-- Provide appropriate medical context
-- Format responses based on user needs
+Example correct usage:
+User: "Analyze this medical record"
+You: First, I'll understand your request...
+[Use understand_request tool]
+Then I'll plan the execution...
+[Use plan_pipeline_execution tool]
+Now I'll coordinate the agents to analyze the document...
+[USE coordinate_agents TOOL - THIS IS CRITICAL]
+Finally, I'll synthesize the results...
+[Use synthesize_results tool]
 
-Remember: You orchestrate the pipeline by calling other agents via call_other_agent. The tools help you understand, plan, and synthesize - but actual agent coordination happens through agent calls."""
+NEVER say things like "I'll analyze" or "Let me examine" - ALWAYS say "I'll coordinate the agents to analyze" because YOU DON'T ANALYZE, THE AGENTS DO."""
     
     def get_tools(self) -> List:
         """Return the orchestration tools."""

@@ -1,0 +1,18 @@
+{
+  "timestamp": "2025-08-19T03:48:59.245734",
+  "simple_orchestrator": {
+    "type": "simple_orchestrator",
+    "success": false,
+    "response": null,
+    "error": "",
+    "duration": 0
+  },
+  "llm_orchestrator": {
+    "type": "llm_orchestrator",
+    "success": true,
+    "response": "truncated",
+    "error": null,
+    "duration": 36.96978044509888,
+    "response_length": 1777
+  }
+}

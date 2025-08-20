@@ -1,6 +1,7 @@
 """
 Encounter grouping tools for LLM-based temporal organization.
-Following keyword_tools.py pattern with Google ADK FunctionTool.
+GITHUB ISSUE FIX: Removed default parameters for Google ADK compatibility.
+All functions now require all parameters to be explicitly provided.
 """
 import json
 from typing import Dict, List, Any, Optional, Set
@@ -160,7 +161,7 @@ Consider temporal proximity, clinical context, and explicit references when iden
 def classify_encounter_type(
     encounter_date: str,
     date_metadata: str,
-    sample_content: str = ""
+    sample_content: str  # Removed default value
 ) -> str:
     """
     Determine the type of encounter based on metadata and context.
@@ -168,11 +169,14 @@ def classify_encounter_type(
     Args:
         encounter_date: The date to classify
         date_metadata: JSON string containing metadata about this date
-        sample_content: Optional sample text from this encounter
+        sample_content: Sample text from this encounter (use empty string for none)
         
     Returns:
         JSON string with classification request
     """
+    # Handle empty sample_content
+    if not sample_content:
+        sample_content = ""
     # Parse the JSON string if it's a string
     if isinstance(date_metadata, str):
         date_metadata = json.loads(date_metadata) if date_metadata else []
@@ -224,18 +228,23 @@ Return the most likely encounter type with confidence level."""
 
 def merge_encounter_groups(
     groups: str,
-    merge_threshold_days: int = 0
+    merge_threshold_days: str  # Changed to str and removed default
 ) -> str:
     """
     Merge encounter groups that likely represent the same clinical event.
     
     Args:
         groups: JSON string containing list of encounter groups to potentially merge
-        merge_threshold_days: Days threshold for considering merge (0 = same day only)
+        merge_threshold_days: Days threshold for considering merge as string (use "0" for same day only)
         
     Returns:
         JSON string with merge analysis request
     """
+    # Convert string to int
+    try:
+        merge_threshold_days = int(merge_threshold_days)
+    except (ValueError, TypeError):
+        merge_threshold_days = 0
     # Parse the JSON string if it's a string
     if isinstance(groups, str):
         groups = json.loads(groups)
@@ -328,6 +337,7 @@ merge_groups_tool = FunctionTool(func=merge_encounter_groups)
 validate_groups_tool = FunctionTool(func=validate_encounter_groups)
 
 # Export all tools
+# Export with clear naming
 ENCOUNTER_TOOLS = [
     group_encounters_tool,
     identify_relationships_tool,

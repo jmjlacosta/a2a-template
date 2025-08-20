@@ -1,5 +1,6 @@
 """
 Checker tools for single-pass verification of clinical summaries.
+GITHUB ISSUE FIX: Simplified signatures for Google ADK compatibility
 Following nutrition_example.py pattern with Google ADK FunctionTool.
 """
 import json
@@ -11,7 +12,7 @@ from google.adk.tools import FunctionTool
 def comprehensive_verification(
     summary: str,
     source_text: str,
-    verification_prompt: Optional[str] = None
+    verification_prompt: str  # Changed from Optional[str] with default to required str
 ) -> str:
     """
     Perform comprehensive single-pass verification with detailed context.
@@ -22,11 +23,15 @@ def comprehensive_verification(
     Args:
         summary: Summary to verify
         source_text: Source text to verify against
-        verification_prompt: Optional custom verification prompt
+        verification_prompt: Custom verification prompt (use empty string for default)
         
     Returns:
         JSON string with verification request
     """
+    # Handle empty string as None
+    if not verification_prompt or verification_prompt == "":
+        verification_prompt = None
+    
     # Limit source text for context
     source_text_limited = source_text[:3000] + "..." if len(source_text) > 3000 else source_text
     
@@ -159,7 +164,7 @@ Return detailed claim-by-claim analysis."""
 
 def suggest_corrections(
     summary: str,
-    issues_found: List[Dict[str, Any]],
+    issues_found_json: str,  # Changed from List[Dict[str, Any]] to JSON string
     source_text: str
 ) -> str:
     """
@@ -167,12 +172,21 @@ def suggest_corrections(
     
     Args:
         summary: Original summary with issues
-        issues_found: List of identified issues
+        issues_found_json: JSON string of identified issues
         source_text: Source text for reference
         
     Returns:
         JSON string with correction request
     """
+    # Parse JSON string to get list of issues
+    try:
+        issues_found = json.loads(issues_found_json)
+        if not isinstance(issues_found, list):
+            issues_found = []
+    except (json.JSONDecodeError, TypeError):
+        # If not valid JSON, treat as empty list
+        issues_found = []
+    
     # Group issues by type
     issue_types = {}
     for issue in issues_found:
@@ -221,7 +235,7 @@ Provide the correction with explanation of changes."""
 def assess_clinical_completeness(
     summary: str,
     source_text: str,
-    clinical_focus: Optional[str] = None
+    clinical_focus: str  # Changed from Optional[str] with default to required str
 ) -> str:
     """
     Assess if key clinical information is included in the summary.
@@ -229,11 +243,15 @@ def assess_clinical_completeness(
     Args:
         summary: Summary to assess
         source_text: Source text containing full information
-        clinical_focus: Optional specific clinical area to focus on
+        clinical_focus: Specific clinical area to focus on (use empty string for general)
         
     Returns:
         JSON string with completeness assessment request
     """
+    # Handle empty string as None
+    if not clinical_focus or clinical_focus == "":
+        clinical_focus = None
+    
     focus_areas = {
         "diagnosis": ["diagnoses", "staging", "grading", "classification"],
         "treatment": ["medications", "procedures", "surgeries", "therapies"],
@@ -268,17 +286,26 @@ Return a completeness assessment with specific missing elements."""
 
 
 def validate_verification_result(
-    verification_result: Dict[str, Any]
+    verification_result_json: str  # Changed from Dict[str, Any] to JSON string
 ) -> str:
     """
     Validate and normalize verification results.
     
     Args:
-        verification_result: Raw verification result to validate
+        verification_result_json: JSON string of verification result to validate
         
     Returns:
         JSON string with validated result
     """
+    # Parse JSON string to get verification result
+    try:
+        verification_result = json.loads(verification_result_json)
+        if not isinstance(verification_result, dict):
+            verification_result = {}
+    except (json.JSONDecodeError, TypeError):
+        # If not valid JSON, use empty dict
+        verification_result = {}
+    
     # Ensure all required fields
     validated = {
         "is_verified": verification_result.get("is_verified", False),
@@ -337,7 +364,8 @@ assess_completeness_tool = FunctionTool(func=assess_clinical_completeness)
 validate_result_tool = FunctionTool(func=validate_verification_result)
 
 # Export all tools
-CHECKER_TOOLS = [
+# Export as CHECKER_TOOLS_FIXED
+CHECKER_TOOLS_FIXED = [
     comprehensive_verification_tool,
     analyze_claims_tool,
     suggest_corrections_tool,

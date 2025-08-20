@@ -1,30 +1,54 @@
 """
-Summary extraction tools for fact extraction from clinical documents.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Summary extraction tools with FIXED signatures for Google ADK compatibility.
+GITHUB ISSUE: Google ADK Tool Signature Fix
+
+Problem: Google ADK cannot parse List[Dict[str, Any]], Dict[str, Any], Optional types
+Solution: Use JSON strings for all complex data structures
+
+Changes from summary_extractor_tools.py:
+1. All List/Dict parameters changed to str (JSON)
+2. Optional parameters made required or converted to str
+3. Added JSON parsing with error handling
+4. Preserved all original logic
 """
 import json
 import re
-from typing import Dict, List, Any, Optional
 from google.adk.tools import FunctionTool
 
 
 def extract_from_reconciled_groups(
-    reconciled_groups: List[Dict[str, Any]],
-    page_to_chunk_mapping: Optional[Dict[int, Dict[str, Any]]] = None
+    reconciled_groups_json: str,  # Changed from List[Dict[str, Any]]
+    page_to_chunk_mapping_json: str  # Changed from Optional[Dict[int, Dict[str, Any]]] with default
 ) -> str:
     """
     Extract facts from reconciled encounter groups.
     
-    This function prepares the input for LLM fact extraction.
-    The actual LLM call happens in the agent executor.
+    FIXED: Accept JSON strings instead of Python list/dict.
     
     Args:
-        reconciled_groups: List of reconciled encounter groups
-        page_to_chunk_mapping: Optional mapping of page numbers to document chunks
+        reconciled_groups_json: JSON string of reconciled encounter groups
+        page_to_chunk_mapping_json: JSON string of page to chunk mapping or "null"
         
     Returns:
         JSON string with extraction request
     """
+    # Parse JSON inputs
+    try:
+        reconciled_groups = json.loads(reconciled_groups_json)
+        if not isinstance(reconciled_groups, list):
+            reconciled_groups = [reconciled_groups] if reconciled_groups else []
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for reconciled_groups"})
+    
+    # Parse optional mapping
+    page_to_chunk_mapping = None
+    if page_to_chunk_mapping_json and page_to_chunk_mapping_json.lower() != "null":
+        try:
+            page_to_chunk_mapping = json.loads(page_to_chunk_mapping_json)
+        except (json.JSONDecodeError, TypeError):
+            page_to_chunk_mapping = None
+    
+    # Original logic from here...
     # Process reconciled groups for extraction
     extraction_requests = []
     
@@ -77,31 +101,40 @@ Return extracted facts organized by encounter with appropriate metadata."""
 
 def extract_events_by_date(
     chunk_content: str,
-    page_number: int,
+    page_number: str,  # Changed from int to str
     source_document: str
 ) -> str:
     """
     Extract all dated clinical events from a document chunk.
     
+    FIXED: Accept page_number as string.
+    
     Args:
         chunk_content: The text content of the chunk
-        page_number: Page number of the chunk
+        page_number: String page number of the chunk
         source_document: Source document name
         
     Returns:
         JSON string with extraction request
     """
+    # Parse page number
+    try:
+        page_num = int(page_number)
+    except (ValueError, TypeError):
+        page_num = 0
+    
+    # Original logic from here...
     # Clean content
     clean_content = re.sub(r'Case #\d+.*?To Top.*?\n', '', chunk_content, flags=re.IGNORECASE)
     
     request = {
         "action": "extract_events_by_date",
-        "page_number": page_number,
+        "page_number": page_num,
         "source_document": source_document,
         "content": clean_content,
         "instructions": f"""You are an expert clinical data extractor. Your task is to scan the provided page of a medical record and extract all dated clinical events that would be relevant for medical decision-making and patient care.
 
-        **Text from Page {page_number} of document '{source_document}':**
+        **Text from Page {page_num} of document '{source_document}':**
         ---
         {clean_content}
         ---
@@ -204,6 +237,7 @@ def determine_specialty(content: str) -> str:
     Returns:
         JSON string with specialty determination
     """
+    # Original logic unchanged - no complex types in signature
     content_lower = content.lower()
     
     # Specialty keywords mapping
@@ -245,22 +279,39 @@ def determine_specialty(content: str) -> str:
 
 
 def process_extraction_batch(
-    chunks: List[Dict[str, Any]],
-    batch_size: int = 5
+    chunks_json: str,  # Changed from List[Dict[str, Any]]
+    batch_size: str  # Changed from int with default to str
 ) -> str:
     """
     Process multiple chunks in a batch for efficient extraction.
     
+    FIXED: Accept JSON string for chunks, batch_size as string.
+    
     Args:
-        chunks: List of document chunks to process
-        batch_size: Number of chunks to process together
+        chunks_json: JSON string of document chunks to process
+        batch_size: String number of chunks to process together
         
     Returns:
         JSON string with batch processing request
     """
+    # Parse JSON inputs
+    try:
+        chunks = json.loads(chunks_json)
+        if not isinstance(chunks, list):
+            chunks = [chunks] if chunks else []
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for chunks"})
+    
+    # Parse batch_size
+    try:
+        batch_size_int = int(batch_size)
+    except (ValueError, TypeError):
+        batch_size_int = 5  # Default
+    
+    # Original logic from here...
     # Prepare chunks for batch processing
     chunk_summaries = []
-    for i, chunk in enumerate(chunks[:batch_size]):
+    for i, chunk in enumerate(chunks[:batch_size_int]):
         chunk_summaries.append({
             "index": i,
             "page_number": chunk.get("page_number", 0),
@@ -288,18 +339,27 @@ Return a consolidated list of all extracted facts from the batch."""
     return json.dumps(request)
 
 
-def validate_extracted_facts(
-    extracted_facts: List[Dict[str, Any]]
-) -> str:
+def validate_extracted_facts(extracted_facts_json: str) -> str:  # Changed from List[Dict[str, Any]]
     """
     Validate the quality and completeness of extracted facts.
     
+    FIXED: Accept JSON string instead of Python list.
+    
     Args:
-        extracted_facts: List of extracted facts to validate
+        extracted_facts_json: JSON string of extracted facts to validate
         
     Returns:
         JSON string with validation results
     """
+    # Parse JSON input
+    try:
+        extracted_facts = json.loads(extracted_facts_json)
+        if not isinstance(extracted_facts, list):
+            extracted_facts = [extracted_facts] if extracted_facts else []
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for extracted_facts"})
+    
+    # Original logic from here...
     # Analyze extracted facts
     total_facts = len(extracted_facts)
     facts_by_date = {}
@@ -330,13 +390,15 @@ def validate_extracted_facts(
         })
     
     # Check for unbalanced specialty distribution
-    if facts_by_specialty and max(facts_by_specialty.values()) / total_facts > 0.8:
-        dominant_specialty = max(facts_by_specialty.items(), key=lambda x: x[1])[0]
-        issues.append({
-            "type": "specialty_imbalance",
-            "severity": "info",
-            "details": f"{dominant_specialty} accounts for >80% of facts"
-        })
+    if facts_by_specialty and total_facts > 0:
+        max_specialty_count = max(facts_by_specialty.values())
+        if max_specialty_count / total_facts > 0.8:
+            dominant_specialty = max(facts_by_specialty.items(), key=lambda x: x[1])[0]
+            issues.append({
+                "type": "specialty_imbalance",
+                "severity": "info",
+                "details": f"{dominant_specialty} accounts for >80% of facts"
+            })
     
     validation = {
         "action": "validation_results",
@@ -352,14 +414,15 @@ def validate_extracted_facts(
 
 
 # Create FunctionTool instances for Google ADK
+# All functions now have simple signatures
 extract_reconciled_tool = FunctionTool(func=extract_from_reconciled_groups)
 extract_events_tool = FunctionTool(func=extract_events_by_date)
 determine_specialty_tool = FunctionTool(func=determine_specialty)
 batch_process_tool = FunctionTool(func=process_extraction_batch)
 validate_facts_tool = FunctionTool(func=validate_extracted_facts)
 
-# Export all tools
-SUMMARY_EXTRACTOR_TOOLS = [
+# Export all tools with fixed signatures
+SUMMARY_EXTRACTOR_TOOLS_FIXED = [
     extract_reconciled_tool,
     extract_events_tool,
     determine_specialty_tool,

@@ -12,6 +12,7 @@ This agent provides intelligent chunk extraction with:
 
 import os
 import sys
+import json
 from pathlib import Path
 from typing import List
 
@@ -19,6 +20,7 @@ from typing import List
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
+
 from tools.chunk_tools import CHUNK_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -98,6 +100,76 @@ Always aim to create chunks that can stand alone as meaningful units of medical 
         """Return the chunk extraction tools."""
         return CHUNK_TOOLS
     
+    async def process_message(self, message: str) -> str:
+        """
+        Process incoming messages directly when not using LLM tools.
+        Handles JSON messages from orchestrators.
+        """
+        try:
+            # Try to parse as JSON
+            data = json.loads(message)
+            
+            # Check if this is a chunk extraction request
+            if "match_info" in data or ("matches" in data and "document" in data):
+                # Direct chunk request from orchestrator
+                from tools.chunk_tools import create_document_chunk
+                
+                # Handle different message formats
+                if "matches" in data:
+                    # From simple orchestrator - process multiple matches
+                    matches = data.get("matches", [])
+                    document = data.get("document", "")
+                    chunks = []
+                    
+                    for match in matches[:5]:  # Limit to 5 chunks
+                        # Create match_info for each match
+                        match_info = {
+                            "file_path": match.get("file_path", "document.txt"),
+                            "line_number": match.get("line_number", 1),
+                            "match_text": match.get("match_text", ""),
+                            "file_content": document
+                        }
+                        
+                        result = create_document_chunk(
+                            file_path=match_info["file_path"],
+                            match_info_json=json.dumps(match_info),
+                            lines_before="10",
+                            lines_after="10",
+                            boundary_detection="true",
+                            file_content=document
+                        )
+                        
+                        chunks.append(result)
+                    
+                    return json.dumps({"chunks": chunks})
+                    
+                else:
+                    # Single match_info
+                    match_info = data.get("match_info", {})
+                    lines_before = str(data.get("lines_before", 10))
+                    lines_after = str(data.get("lines_after", 10))
+                    
+                    result = create_document_chunk(
+                        file_path=match_info.get("file_path", "document.txt"),
+                        match_info_json=json.dumps(match_info),
+                        lines_before=lines_before,
+                        lines_after=lines_after,
+                        boundary_detection="true",
+                        file_content=match_info.get("file_content", "")
+                    )
+                    
+                    return result
+            else:
+                # Fall back to LLM processing - just return the message
+                return message
+                
+        except json.JSONDecodeError:
+            # Not JSON, use LLM processing - just return the message
+            return message
+        except Exception as e:
+            self.logger.error(f"Error processing message: {e}")
+            return json.dumps({"error": str(e)})
+    
     def get_agent_skills(self) -> List[AgentSkill]:
         """Return agent skills for the AgentCard."""
         return [
@@ -162,13 +234,6 @@ Always aim to create chunks that can stand alone as meaningful units of medical 
     def supports_streaming(self) -> bool:
         """Enable streaming for real-time chunk extraction."""
         return True
-    
-    async def process_message(self, message: str) -> str:
-        """
-        This won't be called when tools are provided.
-        The base handles everything via Google ADK LlmAgent.
-        """
-        return "Handled by tool execution"
 
 
 # Module-level app creation for HealthUniverse deployment

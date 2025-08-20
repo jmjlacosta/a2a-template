@@ -1,6 +1,7 @@
 """
 Narrative synthesis tools for LLM-based patient narrative generation.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Compatible with Google ADK - all parameters are required.
+All functions now require all parameters to be explicitly provided.
 """
 import json
 from typing import Dict, List, Any, Optional
@@ -8,10 +9,10 @@ from google.adk.tools import FunctionTool
 
 
 def synthesize_patient_narrative(
-    timeline_events: List[Dict[str, Any]],
-    diagnosis_treatment_data: Optional[Dict[str, Any]] = None,
-    patient_headline: Optional[str] = None,
-    include_sections: Optional[List[str]] = None
+    timeline_events_json: str,  # Changed from List[Dict[str, Any]] to JSON string
+    diagnosis_treatment_data_json: str,  # Removed Optional and default
+    patient_headline: str,  # Removed Optional and default
+    include_sections_json: str  # Changed to JSON string and removed default
 ) -> str:
     """
     Synthesize a complete patient narrative from timeline events.
@@ -20,16 +21,42 @@ def synthesize_patient_narrative(
     The actual LLM call happens in the agent executor.
     
     Args:
-        timeline_events: List of timeline event dictionaries
-        diagnosis_treatment_data: Optional diagnosis and treatment information
-        patient_headline: Optional headline for the patient narrative
-        include_sections: Sections to include (diagnosis, timeline, treatments, etc.)
+        timeline_events_json: JSON string containing list of timeline event dictionaries
+        diagnosis_treatment_data_json: JSON string with diagnosis and treatment info (use "{}" for none)
+        patient_headline: Headline for the patient narrative (use empty string for none)
+        include_sections_json: JSON string with sections to include (use "[]" for defaults)
         
     Returns:
         JSON string with narrative synthesis request
     """
+    # Parse JSON and handle defaults
+    try:
+        timeline_events = json.loads(timeline_events_json) if timeline_events_json else []
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
+    try:
+        diagnosis_treatment_data = json.loads(diagnosis_treatment_data_json) if diagnosis_treatment_data_json else {}
+        if not isinstance(diagnosis_treatment_data, dict):
+            diagnosis_treatment_data = {}
+    except (json.JSONDecodeError, TypeError):
+        diagnosis_treatment_data = {}
+    
+    try:
+        include_sections = json.loads(include_sections_json) if include_sections_json else []
+        if not isinstance(include_sections, list):
+            include_sections = []
+    except (json.JSONDecodeError, TypeError):
+        include_sections = []
+    
     if not include_sections:
         include_sections = ["diagnosis", "timeline", "treatments", "complications", "response_metrics"]
+    
+    # Handle empty patient_headline
+    if not patient_headline:
+        patient_headline = None
     
     # Separate known date events from unknown date events
     known_date_events = []
@@ -101,21 +128,33 @@ def synthesize_patient_narrative(
 
 
 def synthesize_focused_narrative(
-    timeline_events: List[Dict[str, Any]],
+    timeline_events_json: str,  # Changed from List[Dict[str, Any]] to JSON string
     focus_type: str,
-    patient_headline: Optional[str] = None
+    patient_headline: str  # Removed Optional and default
 ) -> str:
     """
     Generate a narrative focused on specific aspects.
     
     Args:
-        timeline_events: List of timeline event dictionaries
+        timeline_events_json: JSON string containing list of timeline event dictionaries
         focus_type: Type to focus on (diagnosis, treatment, complications, etc.)
-        patient_headline: Optional headline for the patient narrative
+        patient_headline: Headline for the patient narrative (use empty string for none)
         
     Returns:
         JSON string with focused narrative synthesis request
     """
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json) if timeline_events_json else []
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
+    # Handle empty patient_headline
+    if not patient_headline:
+        patient_headline = None
+    
     focus_instructions = {
         "diagnosis": "Focus only on diagnoses, staging, and disease progression",
         "treatment": "Focus only on treatments, procedures, and interventions",
@@ -155,19 +194,31 @@ def synthesize_focused_narrative(
 
 
 def format_timeline_events(
-    timeline_events: List[Dict[str, Any]],
-    format_type: str = "chronological"
+    timeline_events_json: str,  # Changed from List[Dict[str, Any]] to JSON string
+    format_type: str  # Removed default
 ) -> str:
     """
     Format timeline events for narrative synthesis.
     
     Args:
-        timeline_events: List of timeline event dictionaries
-        format_type: How to format (chronological, by_category, by_source)
+        timeline_events_json: JSON string containing list of timeline event dictionaries
+        format_type: How to format (chronological, by_category, by_source) - use "chronological" for default
         
     Returns:
         JSON string with formatted events
     """
+    # Parse JSON string and handle defaults
+    try:
+        timeline_events = json.loads(timeline_events_json) if timeline_events_json else []
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
+    # Handle empty format_type
+    if not format_type:
+        format_type = "chronological"
+    
     formatted_result = {
         "action": "format_timeline_events",
         "format_type": format_type,
@@ -230,18 +281,26 @@ def format_timeline_events(
 
 def validate_narrative_structure(
     narrative: str,
-    required_sections: Optional[List[str]] = None
+    required_sections_json: str  # Changed to JSON string and removed default
 ) -> str:
     """
     Validate that a narrative contains required sections and formatting.
     
     Args:
         narrative: The generated narrative text
-        required_sections: Sections that must be present
+        required_sections_json: JSON string with sections that must be present (use "[]" for defaults)
         
     Returns:
         JSON string with validation results
     """
+    # Parse JSON and handle defaults
+    try:
+        required_sections = json.loads(required_sections_json) if required_sections_json else []
+        if not isinstance(required_sections, list):
+            required_sections = []
+    except (json.JSONDecodeError, TypeError):
+        required_sections = []
+    
     if not required_sections:
         required_sections = ["DIAGNOSIS:", "TIMELINE:", "TREATMENTS:", "COMPLICATIONS:", "RESPONSE METRICS:"]
     
