@@ -77,8 +77,8 @@ class A2AAgent(AgentExecutor, ABC):
         Returns:
             AgentCard with agent metadata and capabilities
         """
-        # Get base URL from environment or use default
-        base_url = os.getenv("A2A_BASE_URL", "https://your-agent.example.com/a2a/v1")
+        # Get base URL from HU_APP_URL environment variable (HealthUniverse standard)
+        base_url = os.getenv("HU_APP_URL", os.getenv("A2A_BASE_URL", "https://your-agent.example.com/a2a/v1"))
         
         return AgentCard(
             # Required fields per spec
@@ -155,7 +155,9 @@ class A2AAgent(AgentExecutor, ABC):
             self._current_task_id = task.id
             
             # Create TaskUpdater for status updates (spec-compliant)
-            updater = TaskUpdater(event_queue, task.id, task.context_id or task.id)
+            # Use contextId (camelCase) per spec
+            context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+            updater = TaskUpdater(event_queue, task.id, context_id)
             
             # Signal task is being worked on (spec state: "working")
             await updater.update_status(
@@ -171,22 +173,18 @@ class A2AAgent(AgentExecutor, ABC):
             # This is where agents implement their specific functionality
             response = await self.process_message(message)
             
-            # Send response back via event queue
-            # The A2A framework handles the rest (formatting, delivery, etc.)
-            await event_queue.enqueue_event(
-                new_agent_text_message(response)
-            )
-            
-            # Mark task as completed (spec state: "completed")
+            # Mark task as completed with the response attached
+            # Per spec, attach final response to Task completion
             await updater.update_status(
                 TaskState.completed,
-                new_agent_text_message("Task completed successfully")
+                new_agent_text_message(response)
             )
             
         except ServerError as e:
             # A2A SDK errors are already properly formatted
             if task:
-                updater = TaskUpdater(event_queue, task.id, task.context_id or task.id)
+                context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+                updater = TaskUpdater(event_queue, task.id, context_id)
                 await updater.update_status(
                     TaskState.failed,
                     new_agent_text_message(f"Task failed: {str(e)}")
@@ -196,7 +194,8 @@ class A2AAgent(AgentExecutor, ABC):
             # Let A2A handle error formatting
             self.logger.error(f"Error processing message: {str(e)}")
             if task:
-                updater = TaskUpdater(event_queue, task.id, task.context_id or task.id)
+                context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+                updater = TaskUpdater(event_queue, task.id, context_id)
                 await updater.update_status(
                     TaskState.failed,
                     new_agent_text_message(f"Task failed: {str(e)}")
@@ -211,12 +210,19 @@ class A2AAgent(AgentExecutor, ABC):
         The spec defines tasks/cancel - we should attempt cancellation
         and return a Task with the new state rather than always erroring.
         """
-        # Extract task ID from context
+        # Extract task ID from context (check multiple sources)
         task_id = None
-        if hasattr(context, 'task_id'):
+        
+        # First check current_task if present
+        if hasattr(context, 'current_task') and context.current_task:
+            task_id = context.current_task.id
+        # Then check task_id attribute
+        elif hasattr(context, 'task_id'):
             task_id = context.task_id
+        # Check metadata
         elif context.metadata and 'task_id' in context.metadata:
             task_id = context.metadata['task_id']
+        # Fall back to stored task ID
         elif self._current_task_id:
             task_id = self._current_task_id
         
@@ -240,9 +246,10 @@ class A2AAgent(AgentExecutor, ABC):
             )
             
             # Emit a Task event with canceled state (spec-compliant structure)
+            ctx_id = getattr(context, 'contextId', getattr(context, 'context_id', task_id))
             canceled_task = Task(
                 id=task_id,
-                contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                contextId=ctx_id,
                 status=TaskStatus(
                     state=TaskState.canceled,
                     message=Message(
@@ -250,7 +257,7 @@ class A2AAgent(AgentExecutor, ABC):
                         parts=[TextPart(kind="text", text="Task canceled by user request")],
                         messageId=f"cancel-{task_id}",
                         taskId=task_id,
-                        contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                        contextId=ctx_id,
                         kind="message"
                     )
                 ),
@@ -263,9 +270,10 @@ class A2AAgent(AgentExecutor, ABC):
         except Exception as e:
             self.logger.error(f"Error canceling task {task_id}: {str(e)}")
             # Even if cancellation fails, we should return a task with appropriate state
+            ctx_id = getattr(context, 'contextId', getattr(context, 'context_id', task_id))
             failed_task = Task(
                 id=task_id,
-                contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                contextId=ctx_id,
                 status=TaskStatus(
                     state=TaskState.failed,
                     message=Message(
@@ -273,7 +281,7 @@ class A2AAgent(AgentExecutor, ABC):
                         parts=[TextPart(kind="text", text=f"Cancellation failed: {str(e)}")],
                         messageId=f"cancel-failed-{task_id}",
                         taskId=task_id,
-                        contextId=context.context_id if hasattr(context, 'context_id') else task_id,
+                        contextId=ctx_id,
                         kind="message"
                     )
                 ),
