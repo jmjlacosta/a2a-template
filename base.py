@@ -1,7 +1,8 @@
 """
-Full-featured A2A-compliant base class for agents.
-Minimal implementation following A2A protocol specification v0.3.0.
-The A2A framework handles LLM integration, tools, streaming, and task management.
+A2A-compliant base class for agents (spec v0.3.0).
+- Minimal but production-friendly: consistent contextId handling, clean logging,
+  overridable cancellation hook, and explicit task lifecycle updates.
+- The A2A framework handles LLM/tool orchestration; subclasses implement business logic.
 """
 
 import os
@@ -19,236 +20,154 @@ from a2a.types import (
     AgentCapabilities,
     AgentSkill,
     TextPart,
-    Part,
-    TaskState,
     DataPart,
+    TaskState,
     Task,
     TaskStatus,
-    Message
+    Message,
 )
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError, InvalidParamsError
+
+# ---- sane logging config (avoid duplicate handlers across multiple agents) ----
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
 logger = logging.getLogger(__name__)
 
 
 class A2AAgent(AgentExecutor, ABC):
     """
-    A2A-compliant base class for all agents.
-    
-    This minimal implementation follows the A2A specification v0.3.0:
-    - Agents declare capabilities (name, description, tools)
-    - The A2A framework handles execution, LLM integration, and task management
-    - We only extract messages, process them, and return responses
-    
-    Subclasses must implement:
-    - get_agent_name()
-    - get_agent_description()
-    - process_message()
-    
-    Optional implementations:
-    - get_tools() - for tool-based agents
-    - get_system_instruction() - for custom LLM instructions
-    - get_agent_skills() - for detailed capability declaration
+    Subclass authors must implement:
+      - get_agent_name()
+      - get_agent_description()
+      - process_message(message: str) -> str
+
+    May override for customization:
+      - get_tools(), get_system_instruction(), get_agent_skills()
+      - supports_streaming(), supports_push_notifications()
+      - on_cancel(task_id: str)
     """
-    
+
     def __init__(self):
-        """Initialize the agent with logging."""
-        self._setup_logging()
-        self._current_task_id = None
-    
-    def _setup_logging(self):
-        """Set up logging configuration."""
         self.logger = logging.getLogger(self.__class__.__name__)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
-    
+        self._current_task_id: Optional[str] = None
+
+    # ------------------------------- AgentCard ------------------------------- #
     def create_agent_card(self) -> AgentCard:
-        """
-        Create the AgentCard for agent discovery.
-        Fully compliant with A2A specification v0.3.0.
-        
-        Returns:
-            AgentCard with agent metadata and capabilities
-        """
-        # Get base URL from HU_APP_URL environment variable (HealthUniverse standard)
+        """Create AgentCard for discovery (reads HU_APP_URL/A2A_BASE_URL at runtime)."""
         base_url = os.getenv("HU_APP_URL", os.getenv("A2A_BASE_URL", "https://your-agent.example.com/a2a/v1"))
-        
+        provider_org = os.getenv("A2A_PROVIDER_ORG", "A2A Template")
+        provider_url = os.getenv("A2A_PROVIDER_URL", "https://github.com/jmjlacosta/a2a-template")
+
         return AgentCard(
-            # Required fields per spec
             protocolVersion="0.3.0",
             name=self.get_agent_name(),
             description=self.get_agent_description(),
             version=self.get_agent_version(),
             url=base_url,
-            
-            # Transport configuration
             preferredTransport="JSONRPC",
-            additionalInterfaces=[
-                {
-                    "url": base_url,
-                    "transport": "JSONRPC"
-                }
-                # Add more transports as supported (e.g., GRPC, HTTP+JSON)
-            ],
-            
-            # Provider information
-            provider=AgentProvider(
-                organization="A2A Template",
-                url="https://github.com/jmjlacosta/a2a-template"
-            ),
-            
-            # Capabilities
+            additionalInterfaces=[{"url": base_url, "transport": "JSONRPC"}],
+            provider=AgentProvider(organization=provider_org, url=provider_url),
             capabilities=AgentCapabilities(
                 streaming=self.supports_streaming(),
-                pushNotifications=self.supports_push_notifications()
+                pushNotifications=self.supports_push_notifications(),
             ),
-            
-            # Skills (optional but recommended)
             skills=self.get_agent_skills(),
-            
-            # Security (optional, add as needed)
-            securitySchemes={},  # e.g., {"oauth": {"type":"openIdConnect", "openIdConnectUrl":"..."}}
-            security=[],  # e.g., [{"oauth": ["openid", "profile", "email"]}]
-            
-            # Input/output modes
+            securitySchemes={},  # e.g., {"apiKey":{"type":"apiKey","in":"header","name":"Authorization"}}
+            security=[],
             defaultInputModes=["text/plain", "application/json"],
-            defaultOutputModes=["text/plain", "application/json"]
+            defaultOutputModes=["text/plain", "application/json"],
         )
-    
+
+    # ------------------------------- Execution ------------------------------- #
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """
-        Execute agent logic - A2A compliant minimal implementation.
-        
-        The A2A framework handles:
-        - Task management
-        - LLM integration
-        - Tool orchestration
-        - Streaming and artifacts
-        
-        We only extract the message, process it, and return the response.
-        
-        Args:
-            context: Request context with message and metadata
-            event_queue: Queue for sending events/responses
+        Minimal A2A execution:
+        - normalize/create Task
+        - set working
+        - run business logic
+        - emit final agent message (as an event)
+        - mark completed with a status update (response also readable via the message event)
         """
-        task = None
+        task: Optional[Task] = None
         try:
-            # Extract message from A2A protocol format
             message = self._extract_message(context)
-            
             if not message:
                 raise InvalidParamsError("No message provided in request")
-            
-            # Get or create task for proper lifecycle management
-            task = context.current_task
+
+            # Ensure we have a Task (server may provide one; otherwise create)
+            task = getattr(context, "current_task", None)
             if not task:
                 task = new_task(context.message or new_agent_text_message("Processing..."))
                 await event_queue.enqueue_event(task)
-            
+
             self._current_task_id = task.id
-            
-            # Create TaskUpdater for status updates (spec-compliant)
-            # Use contextId (camelCase) per spec
-            context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+            context_id = self._normalize_context_id(task, context)
             updater = TaskUpdater(event_queue, task.id, context_id)
-            
-            # Signal task is being worked on (spec state: "working")
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("Processing your request...")
-            )
-            
-            # Log if debug mode is enabled
+
+            # Working
+            await updater.update_status(TaskState.working, new_agent_text_message("Processing your request..."))
+
             if os.getenv("SHOW_AGENT_CALLS", "false").lower() == "true":
                 self.logger.info(f"📨 {self.get_agent_name()}: Processing message ({len(message)} chars)")
-            
-            # Process message through agent's business logic
-            # This is where agents implement their specific functionality
+
+            # Business logic
             response = await self.process_message(message)
-            
-            # Mark task as completed with the response attached
-            # Per spec, attach final response to Task completion
-            await updater.update_status(
-                TaskState.completed,
-                new_agent_text_message(response)
-            )
-            
+
+            # Emit the final agent message as a separate event (easy for UIs to render)
+            await event_queue.enqueue_event(new_agent_text_message(response))
+
+            # Completed (status message concise; response is in the prior event)
+            await updater.update_status(TaskState.completed, new_agent_text_message("Task completed successfully"))
+
         except ServerError as e:
-            # A2A SDK errors are already properly formatted
             if task:
-                context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+                context_id = self._normalize_context_id(task, context)
                 updater = TaskUpdater(event_queue, task.id, context_id)
-                await updater.update_status(
-                    TaskState.failed,
-                    new_agent_text_message(f"Task failed: {str(e)}")
-                )
+                await updater.update_status(TaskState.failed, new_agent_text_message(f"Task failed: {e}"))
             raise
         except Exception as e:
-            # Let A2A handle error formatting
-            self.logger.error(f"Error processing message: {str(e)}")
+            self.logger.error(f"Error processing message: {e}")
             if task:
-                context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+                context_id = self._normalize_context_id(task, context)
                 updater = TaskUpdater(event_queue, task.id, context_id)
-                await updater.update_status(
-                    TaskState.failed,
-                    new_agent_text_message(f"Task failed: {str(e)}")
-                )
+                await updater.update_status(TaskState.failed, new_agent_text_message(f"Task failed: {e}"))
             raise ServerError(error=e)
-    
+
+    # ------------------------------- Cancel ---------------------------------- #
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """
-        Handle cancellation requests per A2A specification.
-        Attempts cooperative cancellation and returns Task with canceled state.
-        
-        The spec defines tasks/cancel - we should attempt cancellation
-        and return a Task with the new state rather than always erroring.
+        tasks/cancel: try to stop work, emit a canceled Task and a status update.
+        Subclasses can override `on_cancel()` for runtime-specific cleanup.
         """
-        # Extract task ID from context (check multiple sources)
+        # Resolve taskId
         task_id = None
-        
-        # First check current_task if present
-        if hasattr(context, 'current_task') and context.current_task:
+        if getattr(context, "current_task", None):
             task_id = context.current_task.id
-        # Then check task_id attribute
-        elif hasattr(context, 'task_id'):
+        elif hasattr(context, "task_id"):
             task_id = context.task_id
-        # Check metadata
-        elif context.metadata and 'task_id' in context.metadata:
-            task_id = context.metadata['task_id']
-        # Fall back to stored task ID
+        elif getattr(context, "metadata", None) and "task_id" in context.metadata:
+            task_id = context.metadata["task_id"]
         elif self._current_task_id:
             task_id = self._current_task_id
-        
+
         if not task_id:
-            # If we can't identify the task, we can't cancel it
-            from a2a.utils.errors import InvalidParamsError
             raise ServerError(error=InvalidParamsError("No task ID provided for cancellation"))
-        
+
+        ctx_id = getattr(context, "contextId", getattr(context, "context_id", task_id))
+        updater = TaskUpdater(event_queue, task_id, ctx_id)
+
         try:
-            # Attempt cooperative cancellation in the runtime
-            # Subclasses can override this to implement actual cancellation logic
-            self.logger.info(f"Attempting to cancel task {task_id}")
-            
-            # Get consistent context ID for all operations
-            ctx_id = getattr(context, 'contextId', getattr(context, 'context_id', task_id))
-            
-            # Create updater for the task with consistent context ID
-            updater = TaskUpdater(event_queue, task_id, ctx_id)
-            
-            # Signal task is being canceled (spec state: "canceled")
-            await updater.update_status(
-                TaskState.canceled,
-                new_agent_text_message(f"Task {task_id} has been canceled")
-            )
-            
-            # Emit a Task event with canceled state (spec-compliant structure)
+            await self.on_cancel(task_id)
+
+            # Status: canceled
+            await updater.update_status(TaskState.canceled, new_agent_text_message(f"Task {task_id} has been canceled"))
+
+            # Return a Task object in canceled state
             canceled_task = Task(
                 id=task_id,
                 contextId=ctx_id,
@@ -260,19 +179,16 @@ class A2AAgent(AgentExecutor, ABC):
                         messageId=f"cancel-{task_id}",
                         taskId=task_id,
                         contextId=ctx_id,
-                        kind="message"
-                    )
+                        kind="message",
+                    ),
                 ),
-                kind="task"
+                kind="task",
             )
             await event_queue.enqueue_event(canceled_task)
-            
             self.logger.info(f"Task {task_id} canceled successfully")
-            
+
         except Exception as e:
-            self.logger.error(f"Error canceling task {task_id}: {str(e)}")
-            # Even if cancellation fails, we should return a task with appropriate state
-            ctx_id = getattr(context, 'contextId', getattr(context, 'context_id', task_id))
+            self.logger.error(f"Error canceling task {task_id}: {e}")
             failed_task = Task(
                 id=task_id,
                 contextId=ctx_id,
@@ -280,257 +196,147 @@ class A2AAgent(AgentExecutor, ABC):
                     state=TaskState.failed,
                     message=Message(
                         role="agent",
-                        parts=[TextPart(kind="text", text=f"Cancellation failed: {str(e)}")],
+                        parts=[TextPart(kind="text", text=f"Cancellation failed: {e}")],
                         messageId=f"cancel-failed-{task_id}",
                         taskId=task_id,
                         contextId=ctx_id,
-                        kind="message"
-                    )
+                        kind="message",
+                    ),
                 ),
-                kind="task"
+                kind="task",
             )
             await event_queue.enqueue_event(failed_task)
             raise ServerError(error=e)
-    
+
+    async def on_cancel(self, task_id: str) -> None:
+        """Hook for subclasses to stop long-running jobs, close sockets, etc."""
+        return
+
+    # ---------------------------- Message extraction ------------------------- #
     def _extract_message(self, context: RequestContext) -> Optional[str]:
         """
-        Extract message from A2A protocol format.
-        Spec-compliant parsing that handles Part as discriminated union by 'kind'.
-        
-        Per A2A spec, Part is a union with kind: "text" | "file" | "data"
-        We must branch on part["kind"] and handle TextPart, DataPart, and FilePart.
-        
-        Args:
-            context: Request context containing message
-            
-        Returns:
-            Extracted message as string or None
+        Spec-compliant Part parsing (discriminated union by 'kind': 'text'|'data'|'file').
+        Returns a single string for simple agents; subclasses can override to keep structure.
         """
-        if not context.message or not context.message.parts:
+        msg = getattr(context, "message", None)
+        parts = getattr(msg, "parts", None)
+        if not msg or not parts:
             return None
-        
-        extracted = []
-        
-        for part in context.message.parts:
-            # Handle both dict-like and object-like parts defensively
-            # The spec defines Part as discriminated union by 'kind'
-            
-            # Try to get kind from part (handles both dict and object)
-            kind = None
-            if isinstance(part, dict):
-                kind = part.get("kind")
-            elif hasattr(part, "kind"):
-                kind = part.kind
-            
+
+        extracted: List[str] = []
+
+        for part in parts:
+            # Support both dict-like and object-like
+            kind = part.get("kind") if isinstance(part, dict) else getattr(part, "kind", None)
+
             if kind == "text":
-                # TextPart: extract text field
-                text = None
-                if isinstance(part, dict):
-                    text = part.get("text")
-                elif hasattr(part, "text"):
-                    text = part.text
+                text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
                 if text is not None:
                     extracted.append(str(text))
-                    
+
             elif kind == "data":
-                # DataPart: serialize data as JSON
-                data = None
-                if isinstance(part, dict):
-                    data = part.get("data")
-                elif hasattr(part, "data"):
-                    data = part.data
+                data = part.get("data") if isinstance(part, dict) else getattr(part, "data", None)
                 if data is not None:
-                    if isinstance(data, (dict, list)):
-                        extracted.append(json.dumps(data))
-                    else:
-                        extracted.append(str(data))
-                        
+                    extracted.append(json.dumps(data) if isinstance(data, (dict, list)) else str(data))
+
             elif kind == "file":
-                # FilePart: handle file with uri or bytes
-                file_obj = None
-                if isinstance(part, dict):
-                    file_obj = part.get("file")
-                elif hasattr(part, "file"):
-                    file_obj = part.file
-                    
+                file_obj = part.get("file") if isinstance(part, dict) else getattr(part, "file", None)
                 if file_obj:
-                    # Prefer URI if present
+                    # dict-ish
                     if isinstance(file_obj, dict):
                         name = file_obj.get("name", "unnamed")
                         if "uri" in file_obj:
                             extracted.append(f"[file:{name}] {file_obj['uri']}")
                         elif "bytes" in file_obj:
-                            # Note: In production, you might want to decode/process bytes
                             extracted.append(f"[file-bytes:{name}] (binary data)")
-                    elif hasattr(file_obj, "uri"):
+                    else:
+                        # object-ish
                         name = getattr(file_obj, "name", "unnamed")
-                        extracted.append(f"[file:{name}] {file_obj.uri}")
-                    elif hasattr(file_obj, "bytes"):
-                        name = getattr(file_obj, "name", "unnamed")
-                        extracted.append(f"[file-bytes:{name}] (binary data)")
-                        
+                        if getattr(file_obj, "uri", None):
+                            extracted.append(f"[file:{name}] {file_obj.uri}")
+                        elif getattr(file_obj, "bytes", None) is not None:
+                            extracted.append(f"[file-bytes:{name}] (binary data)")
+
             else:
-                # Fallback for legacy/malformed parts
-                # Try common patterns but log a warning
+                # Legacy fallbacks; warn once per part
                 handled = False
-                
-                # Check for root.text pattern (legacy)
-                if hasattr(part, 'root'):
+                if hasattr(part, "root"):
                     if isinstance(part.root, TextPart):
                         extracted.append(part.root.text)
                         handled = True
                     elif isinstance(part.root, DataPart):
                         data = part.root.data
-                        if isinstance(data, (dict, list)):
-                            extracted.append(json.dumps(data))
-                        else:
-                            extracted.append(str(data))
+                        extracted.append(json.dumps(data) if isinstance(data, (dict, list)) else str(data))
                         handled = True
-                
-                # Direct text attribute (legacy)
                 elif hasattr(part, "text"):
                     extracted.append(str(part.text))
                     handled = True
-                    
-                # Direct data attribute (legacy)
                 elif hasattr(part, "data"):
                     data = part.data
-                    if isinstance(data, (dict, list)):
-                        extracted.append(json.dumps(data))
-                    else:
-                        extracted.append(str(data))
+                    extracted.append(json.dumps(data) if isinstance(data, (dict, list)) else str(data))
                     handled = True
-                
+
                 if handled:
-                    self.logger.warning(f"Handled legacy part format without 'kind' field")
-        
-        if not extracted:
-            return None
-        
-        # Join all parts with newline
-        return "\n".join(extracted)
-    
-    # Abstract methods that subclasses must implement
-    
+                    self.logger.warning("Handled legacy part format without 'kind' field")
+
+        return "\n".join(extracted) if extracted else None
+
+    # --------------------------- Abstract / Optional ------------------------- #
     @abstractmethod
-    def get_agent_name(self) -> str:
-        """Return the agent's name for the AgentCard."""
-        pass
-    
+    def get_agent_name(self) -> str: ...
+
     @abstractmethod
-    def get_agent_description(self) -> str:
-        """Return the agent's description for the AgentCard."""
-        pass
-    
+    def get_agent_description(self) -> str: ...
+
     @abstractmethod
-    async def process_message(self, message: str) -> str:
-        """
-        Process an incoming message and return a response.
-        
-        Args:
-            message: The extracted text message to process
-            
-        Returns:
-            Response message as string
-        """
-        pass
-    
-    # Optional methods that subclasses can override
-    
+    async def process_message(self, message: str) -> str: ...
+
     def get_agent_version(self) -> str:
-        """Return agent version. Override for custom versioning."""
         return "1.0.0"
-    
+
     def get_system_instruction(self) -> str:
-        """
-        Return system instruction for LLM.
-        Override to provide custom instructions.
-        """
         return "You are a helpful AI assistant."
-    
+
     def get_tools(self) -> List:
-        """
-        Return list of tools for the agent.
-        Override to provide tool-based functionality.
-        
-        Tools should be langchain_core.tools.Tool instances or compatible.
-        The A2A framework will handle tool execution.
-        
-        Returns:
-            List of tools or empty list for no tools
-        """
         return []
-    
+
     def get_agent_skills(self) -> List[AgentSkill]:
-        """
-        Return list of skills for the AgentCard.
-        Override to declare specific capabilities.
-        
-        Each skill should define its own inputModes/outputModes if they
-        differ from the agent's defaults.
-        
-        Returns:
-            List of AgentSkill objects or empty list
-        """
         return []
-    
+
     def supports_streaming(self) -> bool:
-        """
-        Whether this agent supports streaming responses.
-        Override to enable streaming support.
-        
-        If you return True here, you MUST implement message/stream SSE
-        and send TaskStatusUpdateEvent/TaskArtifactUpdateEvent payloads.
-        """
         return False
-    
+
     def supports_push_notifications(self) -> bool:
-        """
-        Whether this agent supports push notifications.
-        Override to enable push notification support.
-        """
         return False
-    
-    # Utility methods for inter-agent communication
-    
+
+    # ------------------------------- Utilities ------------------------------- #
+    def _normalize_context_id(self, task: Task, context: RequestContext) -> str:
+        """Prefer spec's camelCase contextId when present; fall back sensibly."""
+        return (
+            getattr(task, "contextId", None)
+            or getattr(task, "context_id", None)
+            or getattr(context, "contextId", None)
+            or getattr(context, "context_id", None)
+            or task.id
+        )
+
     async def call_other_agent(self, agent_name_or_url: str, message: str, timeout: float = 30.0) -> str:
-        """
-        Call another A2A-compliant agent.
-        
-        This utility method helps agents communicate with each other
-        following the A2A protocol.
-        
-        Args:
-            agent_name_or_url: Agent name (from config) or direct URL
-            message: Message to send to the other agent
-            timeout: Request timeout in seconds
-            
-        Returns:
-            Response from the other agent as string
-            
-        Raises:
-            Exception: If agent communication fails
-        """
+        """Utility for inter-agent calls using A2A; supports name→URL via config/agents.json."""
         from utils.a2a_client import A2AAgentClient
-        
-        # Resolve agent URL from config if name provided
+
         agent_url = agent_name_or_url
-        if not agent_name_or_url.startswith(('http://', 'https://')):
-            # Try to load from config
+        if not agent_name_or_url.startswith(("http://", "https://")):
             try:
-                with open('config/agents.json', 'r') as f:
+                with open("config/agents.json", "r") as f:
                     config = json.load(f)
-                    agents = config.get('agents', {})
-                    if agent_name_or_url in agents:
-                        agent_url = agents[agent_name_or_url]['url']
-                    else:
-                        raise ValueError(f"Agent '{agent_name_or_url}' not found in config")
+                agents = config.get("agents", {})
+                if agent_name_or_url in agents:
+                    agent_url = agents[agent_name_or_url]["url"]
+                else:
+                    raise ValueError(f"Agent '{agent_name_or_url}' not found in config")
             except FileNotFoundError:
                 raise ValueError(f"Config file not found and '{agent_name_or_url}' is not a URL")
-        
-        # Call the agent using A2A protocol
+
         self.logger.info(f"Calling agent at {agent_url}")
-        
         async with A2AAgentClient() as client:
-            response = await client.call_agent(agent_url, message, timeout=timeout)
-            return response
+            return await client.call_agent(agent_url, message, timeout=timeout)
