@@ -1,6 +1,7 @@
 """
 Grep tools for pattern searching with LLM error handling.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Compatible with Google ADK - all parameters are required.
+All functions now require all parameters to be explicitly provided.
 """
 import json
 import re
@@ -14,26 +15,53 @@ logger = logging.getLogger(__name__)
 
 def search_medical_patterns(
     file_path: str,
-    patterns: List[str],
-    case_sensitive: bool = False,
-    max_matches: int = 50,
-    context_lines: int = 3,
-    file_content: Optional[str] = None
+    patterns_json: str,  # Changed from List[str] to JSON string
+    case_sensitive: str,  # Changed to string and removed default
+    max_matches: str,  # Changed to string and removed default
+    context_lines: str,  # Changed to string and removed default
+    file_content: str  # Removed Optional and default
 ) -> str:
     """
     Search for multiple regex patterns in a medical document.
     
     Args:
         file_path: Path to the document to search
-        patterns: List of regex patterns to search for
-        case_sensitive: Whether search is case sensitive
-        max_matches: Maximum matches per pattern
-        context_lines: Lines of context before/after match
-        file_content: Optional document content (if provided, file_path is ignored)
+        patterns_json: JSON string containing list of regex patterns to search for
+        case_sensitive: Whether search is case sensitive as string ("true"/"false")
+        max_matches: Maximum matches per pattern as string (use "50" for standard)
+        context_lines: Lines of context before/after match as string (use "3" for standard)
+        file_content: Document content as string (use empty string to read from file_path)
         
     Returns:
         JSON string with search results and any errors
     """
+    # Parse JSON and handle defaults
+    try:
+        patterns = json.loads(patterns_json) if patterns_json else []
+        if not isinstance(patterns, list):
+            patterns = []
+    except (json.JSONDecodeError, TypeError):
+        patterns = []
+    
+    # Convert string parameters to appropriate types
+    try:
+        case_sensitive = case_sensitive.lower() == "true"
+    except (AttributeError, TypeError):
+        case_sensitive = False
+    
+    try:
+        max_matches = int(max_matches)
+    except (ValueError, TypeError):
+        max_matches = 50
+    
+    try:
+        context_lines = int(context_lines)
+    except (ValueError, TypeError):
+        context_lines = 3
+    
+    # Handle file_content parameter
+    use_file_content = file_content and file_content.strip()
+    
     results = {
         "file_path": file_path,
         "search_results": [],
@@ -47,7 +75,7 @@ def search_medical_patterns(
     
     # Get content either from parameter or file
     full_content = None
-    if file_content is not None:
+    if use_file_content:
         # Use provided content directly
         full_content = file_content
         lines = file_content.splitlines(keepends=True)
@@ -156,16 +184,24 @@ def search_medical_patterns(
     return json.dumps(results)
 
 
-def validate_and_fix_patterns(patterns: List[str]) -> str:
+def validate_and_fix_patterns(patterns_json: str) -> str:  # Changed from List[str] to JSON string
     """
     Validate regex patterns and suggest fixes using LLM guidance.
     
     Args:
-        patterns: List of patterns to validate
+        patterns_json: JSON string containing list of patterns to validate
         
     Returns:
         JSON string with validation results and fix suggestions
     """
+    # Parse JSON string
+    try:
+        patterns = json.loads(patterns_json) if patterns_json else []
+        if not isinstance(patterns, list):
+            patterns = []
+    except (json.JSONDecodeError, TypeError):
+        patterns = []
+    
     validation_results = {
         "patterns": [],
         "summary": {
@@ -222,8 +258,8 @@ def validate_and_fix_patterns(patterns: List[str]) -> str:
 def search_with_error_recovery(
     file_path: str,
     pattern: str,
-    fallback_patterns: Optional[List[str]] = None,
-    file_content: Optional[str] = None
+    fallback_patterns_json: str,  # Changed to required JSON string parameter
+    file_content: str  # Removed Optional and default
 ) -> str:
     """
     Search with automatic error recovery and fallback patterns.
@@ -231,14 +267,22 @@ def search_with_error_recovery(
     Args:
         file_path: Document to search
         pattern: Primary pattern to search
-        fallback_patterns: Alternative patterns if primary fails
-        file_content: Optional document content (if provided, file_path is ignored)
+        fallback_patterns_json: JSON string with alternative patterns if primary fails (use "[]" for none)
+        file_content: Document content as string (use empty string to read from file_path)
         
     Returns:
         JSON string with search results
     """
-    if not fallback_patterns:
+    # Parse JSON and handle defaults
+    try:
+        fallback_patterns = json.loads(fallback_patterns_json) if fallback_patterns_json else []
+        if not isinstance(fallback_patterns, list):
+            fallback_patterns = []
+    except (json.JSONDecodeError, TypeError):
         fallback_patterns = []
+    
+    # Handle file_content parameter
+    use_file_content = file_content and file_content.strip()
     
     all_patterns = [pattern] + fallback_patterns
     
@@ -247,9 +291,11 @@ def search_with_error_recovery(
             # Try searching with current pattern
             results = json.loads(search_medical_patterns(
                 file_path=file_path,
-                patterns=[current_pattern],
-                max_matches=100,
-                file_content=file_content
+                patterns_json=json.dumps([current_pattern]),
+                case_sensitive="false",
+                max_matches="100",
+                context_lines="3",
+                file_content=file_content if use_file_content else ""
             ))
             
             # Check if search was successful
@@ -273,16 +319,24 @@ def search_with_error_recovery(
     })
 
 
-def analyze_search_performance(search_results: Dict[str, Any]) -> str:
+def analyze_search_performance(search_results_json: str) -> str:  # Changed from Dict to JSON string
     """
     Analyze search results to identify performance issues and suggest improvements.
     
     Args:
-        search_results: Results from previous search
+        search_results_json: JSON string containing results from previous search
         
     Returns:
         JSON string with performance analysis
     """
+    # Parse JSON string
+    try:
+        search_results = json.loads(search_results_json) if search_results_json else {}
+        if not isinstance(search_results, dict):
+            search_results = {}
+    except (json.JSONDecodeError, TypeError):
+        search_results = {}
+    
     analysis = {
         "performance_metrics": {},
         "issues_found": [],

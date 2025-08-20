@@ -1,25 +1,33 @@
 """
 Unified extraction tools for comprehensive clinical data extraction.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+GITHUB ISSUE FIX: Simplified signatures for Google ADK compatibility.
+All List[Dict[str, Any]] converted to JSON strings.
 """
 import json
 from typing import Dict, List, Any, Optional
 from google.adk.tools import FunctionTool
 
 
-def extract_diagnoses(timeline_events: List[Dict[str, Any]]) -> str:
+def extract_diagnoses(timeline_events_json: str) -> str:
     """
     Extract diagnosis information with special emphasis on cancer staging.
     
-    This function prepares the input for LLM diagnosis extraction.
-    The actual LLM call happens in the agent executor.
+    FIXED: Accept JSON string instead of List[Dict[str, Any]].
     
     Args:
-        timeline_events: List of timeline events to extract from
+        timeline_events_json: JSON string of timeline events to extract from
         
     Returns:
         JSON string with diagnosis extraction request
     """
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
     if not timeline_events:
         return json.dumps({"action": "extract_diagnoses", "diagnoses": []})
     
@@ -98,23 +106,33 @@ def extract_diagnoses(timeline_events: List[Dict[str, Any]]) -> str:
         Each diagnosis summary should include:
         1. The diagnosis itself (cancer type, histology, grade)
         2. How it was diagnosed (e.g., "confirmed by biopsy", "diagnosed via CT imaging", "established by pathology")
-        3. Staging information when available
-        4. Key molecular/biomarker results when present"""
+        3. Any staging information (e.g., "Stage IIIB", "T4N2M0")
+        4. Molecular features if available (e.g., "ER/PR positive", "HER2 negative", "BRAF V600E mutation")"""
     }
     
     return json.dumps(request)
 
 
-def extract_treatments(timeline_events: List[Dict[str, Any]]) -> str:
+def extract_treatments(timeline_events_json: str) -> str:
     """
-    Extract treatment information with focus on oncology therapies.
+    Extract treatment information from timeline events.
+    
+    FIXED: Accept JSON string instead of List[Dict[str, Any]].
     
     Args:
-        timeline_events: List of timeline events to extract from
+        timeline_events_json: JSON string of timeline events to extract from
         
     Returns:
         JSON string with treatment extraction request
     """
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
     if not timeline_events:
         return json.dumps({"action": "extract_treatments", "treatments": []})
     
@@ -130,50 +148,29 @@ def extract_treatments(timeline_events: List[Dict[str, Any]]) -> str:
         "action": "extract_treatments",
         "timeline_events_count": len(timeline_events),
         "events_text": events_text,
-        "instructions": """Extract all TREATMENT events with special focus on oncology therapies INCLUDING PLANNED/RECOMMENDED treatments:
-        1. Oncologic surgery (resection, debulking, lymphadenectomy, metastasectomy)
-        2. Chemotherapy regimens with specific drugs and cycles (including planned regimens)
-        3. Radiation therapy (EBRT, SBRT, SRS, brachytherapy) with dose/fractions
-        4. Immunotherapy (checkpoint inhibitors: pembrolizumab, nivolumab, atezolizumab)
-        5. Targeted therapy (TKIs, mAbs: erlotinib, bevacizumab, trastuzumab)
-        6. Hormone therapy (tamoxifen, aromatase inhibitors, ADT)
-        7. Bone marrow/stem cell transplant
-        8. Clinical trial enrollment with protocol numbers (including planned enrollment)
-        9. Supportive oncology care (antiemetics, growth factors, bisphosphonates)
-        10. Treatment planning and recommendations (even if not yet started)
-        11. Preparatory procedures (port placement, genetic counseling for treatment planning)
+        "instructions": """Extract all TREATMENT events:
         
-        RULES:
-        - Include actual treatments AND planned/recommended treatments
-        - Include treatment planning discussions and recommendations
-        - Look for keywords: "planned", "recommended", "suggested", "discussed", "will start", "to begin"
-        - For duration, use "MM/DD/YYYY - MM/DD/YYYY" format for completed treatments
-        - Use single date for planned treatments or treatment discussions
-        - Include SPECIFIC drug names and combinations when mentioned
-        - For chemo: include regimen name (FOLFOX, FOLFIRINOX, R-CHOP, etc.)
-        - For radiation: include total dose, fractions, and site if specified
-        - Include cycle numbers for systemic therapy
-        - Note dose reductions or modifications
-        - Include clinical trial protocol numbers when available
-        - Include preparatory procedures related to treatment (port placement, etc.)
-        - Extract from consultation notes discussing treatment plans
-        
-        TREATMENT CATEGORIES:
-        - "planned": for recommended or discussed treatments not yet started
-        - "active": for ongoing treatments
-        - "completed": for finished treatments
-        - "preparatory": for procedures to enable treatment (port placement, genetic counseling)
+        TREATMENT CATEGORIES TO IDENTIFY:
+        1. ALL surgeries and surgical procedures (including biopsies)
+        2. ALL chemotherapy (neoadjuvant, adjuvant, palliative)
+        3. ALL radiation therapy (any type or site)
+        4. ALL immunotherapy and targeted therapy
+        5. ALL hormonal/endocrine therapy
+        6. Clinical trial enrollments and experimental treatments
+        7. ALL supportive care medications related to cancer care
+        8. ALL procedures (diagnostic or therapeutic)
+        9. Treatment planning discussions and decisions
+        10. Treatment changes, modifications, or discontinuations
         
         OUTPUT FORMAT (JSON):
         {
             "treatments": [
                 {
-                    "date": "MM/DD/YYYY or MM/DD/YYYY - MM/DD/YYYY",
-                    "summary": "treatment with specific drugs/dose/technique or treatment plan",
-                    "category": "surgery|chemotherapy|radiation|immunotherapy|targeted|hormone|transplant|supportive|preparatory",
-                    "regimen": "specific protocol name or drug combination",
-                    "status": "planned|active|completed|preparatory",
-                    "cycles": "number of cycles if applicable",
+                    "date": "MM/DD/YYYY",
+                    "summary": "treatment description with details",
+                    "type": "surgery|chemotherapy|radiation|immunotherapy|targeted|hormonal|procedure|supportive|trial",
+                    "intent": "curative|palliative|neoadjuvant|adjuvant if mentioned",
+                    "details": "specific drugs, doses, locations, techniques if available",
                     "sources": "document name",
                     "pages": "page numbers"
                 }
@@ -184,16 +181,26 @@ def extract_treatments(timeline_events: List[Dict[str, Any]]) -> str:
     return json.dumps(request)
 
 
-def extract_complications(timeline_events: List[Dict[str, Any]]) -> str:
+def extract_complications(timeline_events_json: str) -> str:
     """
-    Extract complications and adverse events with focus on oncology toxicities.
+    Extract complications and adverse events from timeline events.
+    
+    FIXED: Accept JSON string instead of List[Dict[str, Any]].
     
     Args:
-        timeline_events: List of timeline events to extract from
+        timeline_events_json: JSON string of timeline events to extract from
         
     Returns:
         JSON string with complications extraction request
     """
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
     if not timeline_events:
         return json.dumps({"action": "extract_complications", "complications": []})
     
@@ -209,52 +216,29 @@ def extract_complications(timeline_events: List[Dict[str, Any]]) -> str:
         "action": "extract_complications",
         "timeline_events_count": len(timeline_events),
         "events_text": events_text,
-        "instructions": """Identify all COMPLICATIONS and adverse events related to cancer treatment or disease:
+        "instructions": """Extract all COMPLICATIONS and adverse events:
         
-        GENERAL COMPLICATION PRINCIPLES:
-        1. Any negative health outcome related to treatment
-        2. Unexpected results from medical procedures
-        3. Symptoms or conditions caused by the underlying disease
-        4. Medical issues requiring intervention or monitoring
-        5. Events requiring hospitalization or emergency care
-        6. Treatment modifications due to adverse effects
-        7. Long-term effects from previous interventions
-        8. Secondary medical conditions
-        9. Significant symptoms affecting patient wellbeing
-        10. Any medically concerning development
-        
-        PRINCIPLES FOR IDENTIFICATION:
-        - Include any significant medical concern or adverse outcome
-        - Exclude routine disease monitoring unless complications arise
-        - Include severity information when available (any description)
-        - Note if issue led to treatment changes or medical intervention
-        - Include events requiring additional medical care
-        - Consider both immediate and delayed medical concerns
-        - Include any symptom or condition requiring clinical attention
-        - Look for patient-reported concerns with medical significance
-        - Include any development requiring medical evaluation or intervention
-        
-        WHAT QUALIFIES AS A COMPLICATION:
-        - Any negative outcome from medical treatment
-        - Unexpected results from procedures
-        - Symptoms or conditions requiring medical attention
-        - Events leading to hospitalization or emergency care
-        - Medical issues requiring treatment modification
-        - Any graded adverse event (regardless of system used)
-        - Treatment interruptions due to medical concerns
-        - Patient-reported symptoms of clinical significance
-        - Any medically concerning development
-        - Conditions affecting patient function or wellbeing
+        COMPLICATION CATEGORIES TO IDENTIFY:
+        1. Treatment-related toxicities and side effects
+        2. Surgical complications
+        3. Chemotherapy adverse events
+        4. Radiation toxicity
+        5. Immunotherapy-related adverse events
+        6. Disease-related complications
+        7. Hospitalizations and emergency visits
+        8. Infections
+        9. Secondary conditions
+        10. Dose modifications or treatment delays due to toxicity
         
         OUTPUT FORMAT (JSON):
         {
             "complications": [
                 {
                     "date": "MM/DD/YYYY",
-                    "summary": "specific complication with severity if available",
-                    "category": "treatment-related|procedural|disease-related|medical-intervention|other",
-                    "severity": "grade or description if available",
-                    "outcome": "resolved|ongoing|led to treatment change|hospitalization|unknown",
+                    "summary": "complication description",
+                    "type": "treatment-related|disease-related|surgical|medical",
+                    "severity": "grade or severity if mentioned",
+                    "management": "how it was managed if mentioned",
                     "sources": "document name",
                     "pages": "page numbers"
                 }
@@ -265,16 +249,26 @@ def extract_complications(timeline_events: List[Dict[str, Any]]) -> str:
     return json.dumps(request)
 
 
-def extract_response_metrics(timeline_events: List[Dict[str, Any]]) -> str:
+def extract_response_metrics(timeline_events_json: str) -> str:
     """
-    Extract cancer treatment response metrics including RECIST criteria.
+    Extract treatment response metrics and disease status from timeline events.
+    
+    FIXED: Accept JSON string instead of List[Dict[str, Any]].
     
     Args:
-        timeline_events: List of timeline events to extract from
+        timeline_events_json: JSON string of timeline events to extract from
         
     Returns:
         JSON string with response metrics extraction request
     """
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
     if not timeline_events:
         return json.dumps({"action": "extract_response_metrics", "response_metrics": []})
     
@@ -290,43 +284,29 @@ def extract_response_metrics(timeline_events: List[Dict[str, Any]]) -> str:
         "action": "extract_response_metrics",
         "timeline_events_count": len(timeline_events),
         "events_text": events_text,
-        "instructions": """Extract all RESPONSE METRICS and tumor assessments specific to oncology:
-        1. RECIST criteria assessments (CR, PR, SD, PD)
-        2. Tumor size measurements and percentage changes
-        3. Pathologic response (pCR, MPR, near-complete response, % viable tumor)
-        4. Radiographic response assessments
-        5. Biomarker responses (CEA, CA19-9, PSA, ctDNA changes)
-        6. PET/CT metabolic response (SUV changes, Deauville scores)
-        7. Liquid biopsy/ctDNA clearance
-        8. Disease-free survival milestones
-        9. Time to progression metrics
-        10. Brain metastases response (RANO criteria)
+        "instructions": """Extract all RESPONSE METRICS and disease status assessments:
         
-        RULES:
-        - Include ONLY objective response assessments with specific criteria
-        - Must include percentage changes or specific measurements
-        - Include the assessment method/criteria used
-        - Do NOT include baseline measurements without comparison
-        - Include both radiographic and pathologic responses
-        - Note if response led to treatment decisions
-        
-        ONCOLOGY-SPECIFIC METRICS:
-        - RECIST 1.1: "PR with 45% reduction", "PD with 25% increase"
-        - Pathologic: "90% treatment effect", "pCR (ypT0N0)", "MPR with <10% viable tumor"
-        - Biomarkers: "CEA decreased from 125 to 15 ng/mL", "PSA nadir 0.1"
-        - PET: "SUVmax decreased from 12.5 to 3.2", "Deauville score 2"
-        - Brain: "RANO-BM partial response"
-        - Liquid biopsy: "ctDNA clearance achieved", "VAF decreased from 2.1% to 0%"
+        RESPONSE CATEGORIES TO IDENTIFY:
+        1. RECIST response assessments (CR, PR, SD, PD)
+        2. Pathologic response (pCR, major response, etc.)
+        3. Imaging findings showing response
+        4. Tumor marker changes
+        5. Disease status updates
+        6. Progression events
+        7. Recurrence detection
+        8. Remission status
+        9. Follow-up findings
+        10. Surveillance results
         
         OUTPUT FORMAT (JSON):
         {
             "response_metrics": [
                 {
                     "date": "MM/DD/YYYY",
-                    "summary": "specific response with measurements and criteria",
-                    "criteria": "RECIST|pathologic|biomarker|metabolic|RANO|other",
-                    "response_category": "CR|PR|SD|PD|pCR|MPR|other",
-                    "measurement": "specific percentage or value change",
+                    "summary": "response assessment description",
+                    "type": "imaging|pathologic|clinical|biomarker",
+                    "response": "CR|PR|SD|PD|NED|recurrence|progression if applicable",
+                    "details": "specific measurements or findings if available",
                     "sources": "document name",
                     "pages": "page numbers"
                 }
@@ -337,78 +317,64 @@ def extract_response_metrics(timeline_events: List[Dict[str, Any]]) -> str:
     return json.dumps(request)
 
 
-def extract_demographics(timeline_events: List[Dict[str, Any]]) -> str:
+def extract_demographics(timeline_events_json: str) -> str:
     """
-    Extract patient demographics (age, gender, date of birth).
+    Extract patient demographic information from timeline events.
+    
+    FIXED: Accept JSON string instead of List[Dict[str, Any]].
     
     Args:
-        timeline_events: List of timeline events to search
+        timeline_events_json: JSON string of timeline events to extract from
         
     Returns:
         JSON string with demographics extraction request
     """
-    if not timeline_events:
-        return json.dumps({
-            "action": "extract_demographics",
-            "age": None,
-            "gender": None,
-            "date_of_birth": None
-        })
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
     
     # Format events for processing
-    formatted_events = []
-    for event in timeline_events:
-        event_str = f"Date: {event.get('date', '')}\nSummary: {event.get('summary', '')}\nSources: {', '.join(event.get('source_documents', []))} (Pages: {', '.join(str(p) for p in event.get('source_pages', []))})"
-        formatted_events.append(event_str)
+    all_text = []
+    source_docs = set()
     
-    events_text = "\n\n".join(formatted_events)
+    for event in timeline_events:
+        all_text.append(event.get('summary', ''))
+        source_docs.update(event.get('source_documents', []))
+    
+    combined_text = " ".join(all_text)
     
     request = {
         "action": "extract_demographics",
         "timeline_events_count": len(timeline_events),
-        "events_text": events_text,
-        "instructions": """Extract patient demographic information from the medical records:
+        "combined_text": combined_text[:2000],  # Limit for context
+        "source_documents": list(source_docs),
+        "instructions": """Extract patient demographic information:
         
-        DEMOGRAPHIC INFORMATION TO FIND:
-        1. Patient age (in years) - look for explicit age statements
-        2. Patient gender/sex - look for gender references or pronouns
-        3. Date of birth - look for DOB or birth date information
-        
-        SEARCH STRATEGIES:
-        - Look for explicit age statements ("58 year old", "age 45", "58yo", "58-year-old")
-        - Find age in patient information headers or demographics sections
-        - Search for age in consultation notes ("This 67-year-old", "67yo patient")
-        - Look for age in intake documentation ("Patient is a 45 year old")
-        - Find age in medical history sections
-        - Check provider assessments that mention patient age
-        - Look for age in referral information or transfer notes
-        - Search for age in any clinical context or patient descriptions
-        - Find gender references ("male", "female", "man", "woman") 
-        - Search for pronouns consistently used ("he/him", "she/her")
-        - Look for gender in patient information or demographics
-        - Find gender references in clinical descriptions
-        - Look for date of birth entries ("DOB:", "Date of birth:")
-        - Check patient information sections or headers
-        - Look in consultation notes or intake documentation
-        - Find demographic information in clinical assessments
-        
-        RULES:
-        - Only extract information explicitly stated in the records
-        - Do not infer or assume demographics
-        - If multiple sources provide same information, use the most recent/reliable
-        - For age, prefer explicit age statements over calculated ages
-        - For gender, use the terms as stated in the medical record
-        - Return None for any demographic not found
+        INFORMATION TO EXTRACT:
+        1. Patient age or date of birth
+        2. Gender/Sex
+        3. Race/Ethnicity if mentioned
+        4. Relevant medical history
+        5. Family history if mentioned
+        6. Social history if relevant
+        7. Performance status if mentioned
         
         OUTPUT FORMAT (JSON):
         {
-            "age": "age in years as string or null",
-            "gender": "gender as stated in records or null", 
-            "date_of_birth": "date of birth in MM/DD/YYYY format or null",
-            "sources": {
-                "age_source": "document and page where age was found",
-                "gender_source": "document and page where gender was found",
-                "dob_source": "document and page where DOB was found"
+            "demographics": {
+                "age": "age or null",
+                "gender": "gender or null",
+                "date_of_birth": "DOB if available or null",
+                "race_ethnicity": "if mentioned or null",
+                "medical_history": "relevant past medical history",
+                "family_history": "if mentioned or null",
+                "social_history": "if relevant or null",
+                "performance_status": "if mentioned or null",
+                "sources": ["list of source documents"]
             }
         }"""
     }
@@ -417,120 +383,208 @@ def extract_demographics(timeline_events: List[Dict[str, Any]]) -> str:
 
 
 def generate_patient_headline(
-    timeline_events: List[Dict[str, Any]],
-    diagnosis_treatment_data: Dict[str, Any],
-    demographics_data: Optional[Dict[str, Any]] = None
+    diagnoses_json: str,  # Changed from List[Dict[str, Any]]
+    treatments_json: str,  # Changed from List[Dict[str, Any]]
+    demographics_json: str,  # Changed from Optional[Dict[str, Any]]
+    complications_json: str,  # Changed from Optional[List[Dict[str, Any]]]
+    response_metrics_json: str  # Changed from Optional[List[Dict[str, Any]]]
 ) -> str:
     """
-    Create a concise 1-2 line patient headline for oncology patients.
+    Generate a patient headline based on extracted information.
+    
+    FIXED: Accept JSON strings instead of Python objects.
     
     Args:
-        timeline_events: List of timeline events
-        diagnosis_treatment_data: Extracted diagnoses and treatments
-        demographics_data: Optional demographics information
+        diagnoses_json: JSON string of diagnosis information
+        treatments_json: JSON string of treatment information
+        demographics_json: JSON string of demographic information (use "{}" for none)
+        complications_json: JSON string of complications (use "[]" for none)
+        response_metrics_json: JSON string of response metrics (use "[]" for none)
         
     Returns:
-        JSON string with headline generation request
+        JSON string with patient headline generation request
     """
-    if not timeline_events:
-        return json.dumps({
-            "action": "generate_headline",
-            "headline": "Patient summary unavailable due to insufficient data."
-        })
+    # Parse all JSON strings
+    try:
+        diagnoses = json.loads(diagnoses_json)
+        if not isinstance(diagnoses, list):
+            diagnoses = []
+    except (json.JSONDecodeError, TypeError):
+        diagnoses = []
     
-    # Get demographics if available
-    age = None
-    gender = None
-    if demographics_data:
-        age = demographics_data.get("age")
-        gender = demographics_data.get("gender")
+    try:
+        treatments = json.loads(treatments_json)
+        if not isinstance(treatments, list):
+            treatments = []
+    except (json.JSONDecodeError, TypeError):
+        treatments = []
     
-    # Gather diagnosis information
-    diagnoses = diagnosis_treatment_data.get("diagnoses", [])
+    try:
+        demographics = json.loads(demographics_json)
+        if not isinstance(demographics, dict):
+            demographics = {}
+    except (json.JSONDecodeError, TypeError):
+        demographics = {}
     
-    # Format events
-    all_events = []
-    for event in timeline_events[:20]:
-        all_events.append(f"{event.get('date', '')}: {event.get('summary', '')}")
-    events_text = "\n".join(all_events)
+    try:
+        complications = json.loads(complications_json)
+        if not isinstance(complications, list):
+            complications = []
+    except (json.JSONDecodeError, TypeError):
+        complications = []
     
-    # Include all diagnoses with staging
-    primary_diagnoses_with_staging = []
-    for d in diagnoses:
-        diagnosis_text = f"{d['date']}: {d['summary']}"
-        if d.get('staging_info'):
-            diagnosis_text += f" ({d['staging_info']})"
-        primary_diagnoses_with_staging.append(diagnosis_text)
+    try:
+        response_metrics = json.loads(response_metrics_json)
+        if not isinstance(response_metrics, list):
+            response_metrics = []
+    except (json.JSONDecodeError, TypeError):
+        response_metrics = []
     
-    primary_diagnoses = "\n".join(primary_diagnoses_with_staging)
+    # Build key information summary
+    key_info = []
+    
+    # Demographics
+    if demographics:
+        age = demographics.get('age')
+        gender = demographics.get('gender')
+        if age and gender:
+            key_info.append(f"{age}-year-old {gender}")
+        elif age:
+            key_info.append(f"{age}-year-old patient")
+        elif gender:
+            key_info.append(f"{gender} patient")
+    
+    # Primary diagnosis
+    if diagnoses:
+        primary_dx = diagnoses[0]
+        key_info.append(primary_dx.get('summary', 'cancer diagnosis'))
+    
+    # Key treatments
+    treatment_types = set()
+    for tx in treatments[:3]:  # First 3 treatments
+        tx_type = tx.get('type', '')
+        if tx_type:
+            treatment_types.add(tx_type)
+    
+    if treatment_types:
+        key_info.append(f"treated with {', '.join(list(treatment_types)[:2])}")
+    
+    # Current status
+    if response_metrics:
+        latest_response = response_metrics[-1]
+        response_status = latest_response.get('response', '')
+        if response_status:
+            key_info.append(f"current status: {response_status}")
+    
+    # Major complications
+    if complications:
+        key_info.append(f"{len(complications)} complications noted")
     
     request = {
         "action": "generate_patient_headline",
-        "age": age,
-        "gender": gender,
-        "diagnoses_count": len(diagnoses),
-        "primary_diagnoses": primary_diagnoses if primary_diagnoses else "No specific diagnoses identified",
-        "events_text": events_text,
-        "instructions": """Create a 1-2 line patient headline focused on oncology that captures ALL essential patient diagnoses.
+        "key_information": key_info,
+        "diagnosis_count": len(diagnoses),
+        "treatment_count": len(treatments),
+        "has_demographics": bool(demographics),
+        "has_complications": bool(complications),
+        "has_response_data": bool(response_metrics),
+        "instructions": f"""Generate a concise patient headline (1-2 sentences) that captures:
         
-        FORMAT: "Patient is a [AGE] year old [SEX] with [ALL CANCER DIAGNOSES, STAGES, KEY MOLECULAR FEATURES]"
+        KEY INFORMATION:
+        {' | '.join(key_info)}
         
-        DIAGNOSTIC COMPLETENESS RULES:
-        - Include ALL primary cancer diagnoses from the diagnosis data
-        - If multiple cancers, list all with their individual stages and characteristics
-        - For each cancer, include: location, histology, stage, and key molecular features
-        - Use connecting words like "and", "with concurrent", "and synchronous" for multiple cancers
-        - Prioritize the most advanced stage cancer first, then list others
-        - Include metastatic sites if present (hepatic, pulmonary, nodal, etc.)
+        The headline should:
+        1. Start with demographics if available (age, gender)
+        2. Include primary diagnosis with key features
+        3. Mention main treatment modalities
+        4. Include current status if known
+        5. Be medically accurate and professional
         
-        DEMOGRAPHIC USAGE RULES:
-        - ALWAYS use provided age and gender if available - do not search timeline events for demographics when already provided
-        - If age is provided, use it in the headline format
-        - If gender is provided, use it in the headline format  
-        - If both age and gender provided: "Patient is a [age] year old [gender] with..."
-        - If only gender provided: "Patient is a [gender] with..."
-        - If only age provided: "Patient is a [age] year old individual with..."
-        - If neither provided: "Patient with..." or search clinical events as fallback
+        Example format:
+        "[Age]-year-old [gender] with [diagnosis including stage/key features] treated with [main treatments], [current status if known]."
         
-        GENERAL PRINCIPLES:
-        - Prioritize provided demographics over searching timeline events
-        - Include ALL cancer diagnoses with their staging when available
-        - Include key molecular markers if relevant (MMR status, receptor status, etc.)
-        - Include histology when important (adenocarcinoma, invasive ductal carcinoma, etc.)
-        - For metastatic disease, mention key metastatic sites
-        - Maximum 2 lines but use both lines if needed for multiple cancers or complex disease
-        - Be comprehensive but concise
-        - Use present tense
-        - Don't include dates or treatment details"""
+        Keep it under 30 words if possible."""
     }
     
     return json.dumps(request)
 
 
-def format_timeline_events(timeline_events: List[Any]) -> str:
+def format_timeline_events(timeline_events_json: str) -> str:
     """
-    Helper function to format timeline events for LLM processing.
+    Format timeline events for display.
+    
+    FIXED: Accept JSON string instead of List[Any].
     
     Args:
-        timeline_events: List of timeline event objects
+        timeline_events_json: JSON string of timeline events to format
         
     Returns:
-        JSON string with formatted events
+        JSON string with formatted timeline
     """
-    formatted_events = []
+    # Parse JSON string
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
+    if not timeline_events:
+        return json.dumps({"formatted_timeline": "No timeline events available"})
+    
+    formatted_sections = []
+    
+    # Group by date
+    events_by_date = {}
     for event in timeline_events:
-        # Handle both dict and object formats
-        if isinstance(event, dict):
-            event_str = f"Date: {event.get('date', '')}\nSummary: {event.get('summary', '')}\nSources: {', '.join(event.get('source_documents', []))} (Pages: {', '.join(str(p) for p in event.get('source_pages', []))})"
+        date = event.get('date', 'Unknown Date')
+        if date not in events_by_date:
+            events_by_date[date] = []
+        events_by_date[date].append(event)
+    
+    # Sort dates (handling "Unknown Date" specially)
+    dates = sorted([d for d in events_by_date.keys() if d != 'Unknown Date'])
+    if 'Unknown Date' in events_by_date:
+        dates.append('Unknown Date')
+    
+    # Format each date's events
+    for date in dates:
+        date_events = events_by_date[date]
+        
+        if date == 'Unknown Date':
+            formatted_sections.append("\n## Background Information (Date Unknown)")
         else:
-            # Assume it's an object with attributes
-            event_str = f"Date: {getattr(event, 'date', '')}\nSummary: {getattr(event, 'summary', '')}\nSources: {', '.join(getattr(event, 'source_documents', []))} (Pages: {', '.join(str(p) for p in getattr(event, 'source_pages', []))})"
-        formatted_events.append(event_str)
+            formatted_sections.append(f"\n## {date}")
+        
+        for event in date_events:
+            summary = event.get('summary', '')
+            sources = event.get('source_documents', [])
+            pages = event.get('source_pages', [])
+            verified = event.get('verified', False)
+            
+            # Format the event
+            event_text = f"- {summary}"
+            
+            # Add source info
+            if sources:
+                source_str = f" (Source: {', '.join(sources)}"
+                if pages:
+                    source_str += f", Pages: {', '.join(str(p) for p in pages)}"
+                source_str += ")"
+                event_text += source_str
+            
+            # Add verification status
+            if verified:
+                event_text += " ✓"
+            
+            formatted_sections.append(event_text)
+    
+    formatted_timeline = "\n".join(formatted_sections)
     
     return json.dumps({
-        "action": "format_events",
-        "formatted_events": formatted_events,
-        "count": len(formatted_events)
+        "formatted_timeline": formatted_timeline,
+        "total_events": len(timeline_events),
+        "date_count": len(events_by_date)
     })
 
 
@@ -541,7 +595,7 @@ extract_complications_tool = FunctionTool(func=extract_complications)
 extract_response_metrics_tool = FunctionTool(func=extract_response_metrics)
 extract_demographics_tool = FunctionTool(func=extract_demographics)
 generate_headline_tool = FunctionTool(func=generate_patient_headline)
-format_events_tool = FunctionTool(func=format_timeline_events)
+format_timeline_tool = FunctionTool(func=format_timeline_events)
 
 # Export all tools
 UNIFIED_EXTRACTOR_TOOLS = [
@@ -551,5 +605,5 @@ UNIFIED_EXTRACTOR_TOOLS = [
     extract_response_metrics_tool,
     extract_demographics_tool,
     generate_headline_tool,
-    format_events_tool
+    format_timeline_tool
 ]

@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
 from google.adk.tools import FunctionTool
-from tools.timeline_builder_tools import TIMELINE_BUILDER_TOOLS
+# GITHUB ISSUE FIX: Using fixed tools with simplified signatures
+# Original tools had List[Dict[str, Any]] which Google ADK cannot parse
+from tools.timeline_builder_tools import TIMELINE_BUILDER_TOOLS_FIXED as TIMELINE_BUILDER_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore

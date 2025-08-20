@@ -1,6 +1,7 @@
 """
 Chunk extraction tools with LLM-powered boundary detection.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Compatible with Google ADK - all parameters are required.
+All functions now require all parameters to be explicitly provided.
 """
 import json
 import re
@@ -14,32 +15,54 @@ logger = logging.getLogger(__name__)
 
 def create_document_chunk(
     file_path: str,
-    match_info: Dict[str, Any],
-    context_size: int = 5,
-    boundary_detection: bool = True,
-    file_content: Optional[str] = None
+    match_info_json: str,  # Changed from Dict[str, Any] to JSON string
+    context_size: str,  # Changed to string and removed default
+    boundary_detection: str,  # Changed to string and removed default
+    file_content: str  # Removed Optional and default
 ) -> str:
     """
     Create an intelligent chunk around a pattern match.
     
     Args:
         file_path: Path to the document
-        match_info: Information about the match (line_number, pattern, etc.)
-        context_size: Base lines of context before/after match
-        boundary_detection: Whether to use intelligent boundary detection
-        file_content: Optional document content (if provided, file_path is ignored)
+        match_info_json: JSON string containing information about the match (line_number, pattern, etc.)
+        context_size: Base lines of context before/after match as string (use "5" for standard)
+        boundary_detection: Whether to use intelligent boundary detection as string ("true"/"false")
+        file_content: Document content as string (use empty string to read from file_path)
         
     Returns:
         JSON string with chunk content and metadata
     """
     try:
+        # Parse JSON and handle defaults
+        try:
+            match_info = json.loads(match_info_json) if match_info_json else {}
+            if not isinstance(match_info, dict):
+                match_info = {}
+        except (json.JSONDecodeError, TypeError):
+            match_info = {}
+        
+        # Convert string parameters
+        try:
+            context_size = int(context_size)
+        except (ValueError, TypeError):
+            context_size = 5
+        
+        try:
+            boundary_detection = boundary_detection.lower() == "true"
+        except (AttributeError, TypeError):
+            boundary_detection = True
+        
+        # Handle file_content parameter
+        use_file_content = file_content and file_content.strip()
+        
         line_number = match_info.get("line_number", 1)
         pattern = match_info.get("pattern", "")
         match_text = match_info.get("match_text", "")
         match_position = match_info.get("match_position", None)  # Character position if available
         
         # Get content either from parameter or file
-        if file_content is not None:
+        if use_file_content:
             # Use provided content directly
             content = file_content
         else:
@@ -151,27 +174,49 @@ def create_document_chunk(
 
 def extract_multiple_chunks(
     file_path: str,
-    matches: List[Dict[str, Any]],
-    merge_overlapping: bool = True,
-    max_chunks: int = 50,
-    file_content: Optional[str] = None
+    matches_json: str,  # Changed from List[Dict[str, Any]] to JSON string
+    merge_overlapping: str,  # Changed to string and removed default
+    max_chunks: str,  # Changed to string and removed default
+    file_content: str  # Removed Optional and default
 ) -> str:
     """
     Extract multiple chunks from a document, optionally merging overlapping ones.
     
     Args:
         file_path: Path to the document
-        matches: List of match information dictionaries
-        merge_overlapping: Whether to merge overlapping chunks
-        max_chunks: Maximum number of chunks to extract
-        file_content: Optional document content (if provided, file_path is ignored)
+        matches_json: JSON string containing list of match information dictionaries
+        merge_overlapping: Whether to merge overlapping chunks as string ("true"/"false")
+        max_chunks: Maximum number of chunks to extract as string (use "50" for standard)
+        file_content: Document content as string (use empty string to read from file_path)
         
     Returns:
         JSON string with extracted chunks
     """
     try:
+        # Parse JSON and handle defaults
+        try:
+            matches = json.loads(matches_json) if matches_json else []
+            if not isinstance(matches, list):
+                matches = []
+        except (json.JSONDecodeError, TypeError):
+            matches = []
+        
+        # Convert string parameters
+        try:
+            merge_overlapping = merge_overlapping.lower() == "true"
+        except (AttributeError, TypeError):
+            merge_overlapping = True
+        
+        try:
+            max_chunks = int(max_chunks)
+        except (ValueError, TypeError):
+            max_chunks = 50
+        
+        # Handle file_content parameter
+        use_file_content = file_content and file_content.strip()
+        
         # Get content to check if it's single-line
-        if file_content is not None:
+        if use_file_content:
             content = file_content
         else:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -203,10 +248,10 @@ def extract_multiple_chunks(
             
             chunk_data = json.loads(create_document_chunk(
                 file_path=file_path,
-                match_info=match,
-                context_size=5,
-                boundary_detection=not is_single_line,  # Skip boundary detection for single-line
-                file_content=file_content
+                match_info_json=json.dumps(match),
+                context_size="5",
+                boundary_detection="false" if is_single_line else "true",  # Skip boundary detection for single-line
+                file_content=file_content if use_file_content else ""
             ))
             
             if "error" not in chunk_data:
@@ -233,7 +278,7 @@ def extract_multiple_chunks(
             coverage = (total_chars / len(content)) * 100 if content else 0
         else:
             total_lines = sum(c["chunk"].get("line_count", 0) for c in chunks)
-            coverage = _calculate_document_coverage(file_path, chunks, file_content)
+            coverage = _calculate_document_coverage(file_path, chunks, file_content if use_file_content else None)
         
         result = {
             "chunks": chunks,
@@ -260,21 +305,39 @@ def extract_multiple_chunks(
 
 
 def find_chunk_boundaries(
-    lines: List[str],
-    target_line: int,
-    expansion_limit: int = 20
+    lines_json: str,  # Changed from List[str] to JSON string
+    target_line: str,  # Changed to string
+    expansion_limit: str  # Changed to string and removed default
 ) -> str:
     """
     Find natural boundaries for a chunk using LLM guidance.
     
     Args:
-        lines: Document lines
-        target_line: Target line number (0-based)
-        expansion_limit: Maximum lines to expand in each direction
+        lines_json: JSON string containing document lines
+        target_line: Target line number as string (0-based)
+        expansion_limit: Maximum lines to expand in each direction as string (use "20" for standard)
         
     Returns:
         JSON string with boundary information
     """
+    # Parse JSON and handle defaults
+    try:
+        lines = json.loads(lines_json) if lines_json else []
+        if not isinstance(lines, list):
+            lines = []
+    except (json.JSONDecodeError, TypeError):
+        lines = []
+    
+    try:
+        target_line = int(target_line)
+    except (ValueError, TypeError):
+        target_line = 0
+    
+    try:
+        expansion_limit = int(expansion_limit)
+    except (ValueError, TypeError):
+        expansion_limit = 20
+    
     # Look for natural boundaries
     boundaries = {
         "sections": [],
@@ -285,7 +348,7 @@ def find_chunk_boundaries(
     
     # Search before target
     for i in range(max(0, target_line - expansion_limit), target_line):
-        line = lines[i].strip()
+        line = lines[i].strip() if i < len(lines) else ""
         
         # Section headers (all caps, ending with colon, etc.)
         if _is_section_header(line):
@@ -301,7 +364,7 @@ def find_chunk_boundaries(
     
     # Search after target
     for i in range(target_line + 1, min(len(lines), target_line + expansion_limit + 1)):
-        line = lines[i].strip()
+        line = lines[i].strip() if i < len(lines) else ""
         
         if _is_section_header(line):
             boundaries["headers"].append({"line": i, "text": line, "type": "section"})
@@ -328,20 +391,31 @@ def find_chunk_boundaries(
 
 def optimize_chunk_size(
     chunk_content: str,
-    target_size: int = 500,
-    preserve_context: bool = True
+    target_size: str,  # Changed to string and removed default
+    preserve_context: str  # Changed to string and removed default
 ) -> str:
     """
     Optimize chunk size while preserving important context.
     
     Args:
         chunk_content: Original chunk content
-        target_size: Target size in lines
-        preserve_context: Whether to preserve semantic context
+        target_size: Target size in lines as string (use "500" for standard)
+        preserve_context: Whether to preserve semantic context as string ("true"/"false")
         
     Returns:
         JSON string with optimized chunk
     """
+    # Convert string parameters
+    try:
+        target_size = int(target_size)
+    except (ValueError, TypeError):
+        target_size = 500
+    
+    try:
+        preserve_context = preserve_context.lower() == "true"
+    except (AttributeError, TypeError):
+        preserve_context = True
+    
     lines = chunk_content.split('\n')
     
     if len(lines) <= target_size:

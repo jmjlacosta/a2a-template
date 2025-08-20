@@ -1,6 +1,7 @@
 """
 Keyword generation tools for LLM-based pattern extraction.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Compatible with Google ADK - all parameters are required.
+All functions now require all parameters to be explicitly provided.
 """
 import json
 import re
@@ -10,9 +11,9 @@ from google.adk.tools import FunctionTool
 
 def generate_document_patterns(
     preview: str,
-    doc_type: str = "medical",
-    focus_areas: Optional[List[str]] = None,
-    max_patterns: int = 25
+    doc_type: str,  # Removed default value
+    focus_areas_json: str,  # Changed from Optional[List[str]] to JSON string
+    max_patterns: str  # Changed to string and removed default
 ) -> str:
     """
     Generate regex patterns from document preview.
@@ -22,15 +23,29 @@ def generate_document_patterns(
     
     Args:
         preview: First 20 lines of the document
-        doc_type: Type of medical document (medical, oncology, pathology)
-        focus_areas: Specific areas to focus on (diagnosis, treatment, etc.)
-        max_patterns: Maximum patterns to generate
+        doc_type: Type of medical document (use "medical" for general)
+        focus_areas_json: JSON string of areas to focus on (use "[]" for defaults)
+        max_patterns: Maximum patterns to generate as string (use "25" for standard)
         
     Returns:
         JSON string with pattern generation request
     """
+    # Parse JSON and handle defaults
+    try:
+        focus_areas = json.loads(focus_areas_json) if focus_areas_json else []
+    except (json.JSONDecodeError, TypeError):
+        focus_areas = []
+    
     if not focus_areas:
         focus_areas = ["diagnosis", "treatment", "medications", "procedures"]
+    
+    if not doc_type:
+        doc_type = "medical"
+    
+    try:
+        max_patterns = int(max_patterns)
+    except (ValueError, TypeError):
+        max_patterns = 25
     
     # Validate preview
     lines = preview.split('\n')
@@ -70,7 +85,7 @@ Requirements:
 def generate_focused_patterns(
     preview: str,
     focus_type: str,
-    max_patterns: int = 10
+    max_patterns: str  # Changed to string and removed default
 ) -> str:
     """
     Generate patterns focused on specific medical aspects.
@@ -78,11 +93,17 @@ def generate_focused_patterns(
     Args:
         preview: Document preview
         focus_type: Type to focus on (medications, procedures, labs, etc.)
-        max_patterns: Maximum patterns to generate
+        max_patterns: Maximum patterns to generate as string (use "10" for standard)
         
     Returns:
         JSON string with focused pattern generation request
     """
+    # Convert string to int
+    try:
+        max_patterns = int(max_patterns)
+    except (ValueError, TypeError):
+        max_patterns = 10
+    
     focus_instructions = {
         "medications": "medication names, dosages, routes, frequencies, and drug classes",
         "procedures": "surgical procedures, interventions, and medical operations",
@@ -165,16 +186,24 @@ def analyze_preview_structure(preview: str) -> str:
     return json.dumps(analysis)
 
 
-def validate_patterns(patterns: List[str]) -> str:
+def validate_patterns(patterns_json: str) -> str:  # Changed from List[str] to JSON string
     """
     Validate regex patterns for correctness.
     
     Args:
-        patterns: List of regex patterns to validate
+        patterns_json: JSON string containing list of regex patterns to validate
         
     Returns:
         JSON string with validation results
     """
+    # Parse JSON string
+    try:
+        patterns = json.loads(patterns_json)
+        if not isinstance(patterns, list):
+            patterns = []
+    except (json.JSONDecodeError, TypeError):
+        patterns = []
+    
     results = []
     
     for pattern in patterns:

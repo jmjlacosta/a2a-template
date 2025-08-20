@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
 from google.adk.tools import FunctionTool
-from tools.unified_verifier_tools import UNIFIED_VERIFIER_TOOLS
+# GITHUB ISSUE FIX: Using fixed tools with simplified signatures
+# Original tools had Dict[str, Any] and List[Dict[str, Any]] which Google ADK cannot parse
+from tools.unified_verifier_tools import UNIFIED_VERIFIER_TOOLS_FIXED as UNIFIED_VERIFIER_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -36,12 +38,30 @@ class UnifiedVerifierAgent(A2AAgent):
     def get_system_instruction(self) -> str:
         return """You are a comprehensive medical information verification specialist. Your role is to perform final validation of all processed data.
 
+CRITICAL: Tool Usage Instructions
+All verification tools require JSON STRING parameters, not Python objects.
+When calling tools, you MUST:
+1. Convert any data structures to JSON strings using json.dumps()
+2. Pass the JSON string to the tool parameter
+3. Never pass raw Python dicts or lists directly
+
+Example tool usage:
+- CORRECT: verify_diagnoses(diagnosis_data_json='{"diagnoses": [...]}', timeline_events_json='[...]')
+- WRONG: verify_diagnoses(diagnosis_data_json={"diagnoses": [...]}, timeline_events_json=[...])
+
 When verifying information:
-1. Cross-check all extracted data
-2. Validate medical logic
-3. Ensure completeness
-4. Check for contradictions
-5. Generate confidence scores
+1. Parse input data if needed
+2. Convert data to JSON strings for tool calls
+3. Cross-check all extracted data
+4. Validate medical logic
+5. Ensure completeness
+6. Check for contradictions
+7. Generate confidence scores
+
+If you receive complex nested data in the message:
+- First identify the data structure
+- Convert relevant parts to JSON strings
+- Call the appropriate verification tools with the JSON strings
 
 Use the provided tools to perform comprehensive verification."""
     
@@ -54,8 +74,51 @@ Use the provided tools to perform comprehensive verification."""
         return True
     
     async def process_message(self, message: str) -> str:
-        # This won't be called when tools are provided
-        return "Processing..."
+        """
+        Process incoming message and ensure proper JSON formatting.
+        
+        This helps the LLM understand how to format data for tool calls.
+        """
+        import json
+        
+        # Try to detect if the message contains JSON data
+        try:
+            # Check if the message itself is JSON
+            data = json.loads(message)
+            
+            # If it's valid JSON, remind the agent about tool usage
+            # Handle both dict and list cases
+            if isinstance(data, dict):
+                diagnoses_example = json.dumps(data.get("diagnoses", {}))
+                timeline_example = json.dumps(data.get("timeline", []))
+            else:
+                # If it's a list or other type, use the whole data
+                diagnoses_example = json.dumps(data)
+                timeline_example = json.dumps(data)
+            
+            return f"""I received the following data to verify:
+{json.dumps(data, indent=2)}
+
+Remember: When calling verification tools, convert data to JSON strings first.
+For example: verify_diagnoses(diagnosis_data_json='{diagnoses_example}', timeline_events_json='{timeline_example}')
+
+Now, please verify this medical data using the appropriate tools."""
+            
+        except json.JSONDecodeError:
+            # Not JSON, process as regular text
+            if "{" in message and "}" in message:
+                # Might contain embedded JSON
+                return f"""Processing verification request. 
+
+If the message contains data structures, remember to:
+1. Extract the data
+2. Convert to JSON strings using json.dumps()
+3. Pass JSON strings to tool parameters
+
+Message: {message}"""
+            else:
+                # Plain text message
+                return "Processing verification request..."
 
 
 # Module-level app creation (required for deployment)

@@ -13,6 +13,7 @@ This agent provides medical text analysis with:
 
 import os
 import sys
+import json
 from pathlib import Path
 from typing import List
 
@@ -102,6 +103,54 @@ Always aim to produce summaries that would be useful for clinical decision-makin
     def get_tools(self) -> List:
         """Return the summarization tools."""
         return SUMMARIZE_TOOLS
+    
+    async def process_message(self, message: str) -> str:
+        """
+        Process incoming messages directly when not using LLM tools.
+        Handles JSON messages from orchestrators.
+        """
+        try:
+            # Try to parse as JSON
+            data = json.loads(message)
+            
+            # Check if this is a summarization request
+            if "chunk_content" in data or "chunks" in data:
+                # Direct summarization request from orchestrator
+                from tools.summarize_tools import summarize_medical_chunk
+                
+                # Get content to summarize
+                if "chunks" in data:
+                    # Multiple chunks
+                    chunks = data.get("chunks", [])
+                    if isinstance(chunks, list):
+                        # Join chunks into single content
+                        chunk_content = "\n\n".join(str(c) for c in chunks[:5])
+                    else:
+                        chunk_content = str(chunks)
+                else:
+                    chunk_content = data.get("chunk_content", "")
+                
+                metadata = data.get("chunk_metadata", {})
+                summary_type = data.get("summary_style", "clinical")
+                
+                result = summarize_medical_chunk(
+                    chunk_content=chunk_content,
+                    chunk_metadata_json=json.dumps(metadata),
+                    summary_type=summary_type,
+                    max_length="500"
+                )
+                
+                return result
+            else:
+                # Fall back to LLM processing - just return the message
+                return message
+                
+        except json.JSONDecodeError:
+            # Not JSON, use LLM processing - just return the message
+            return message
+        except Exception as e:
+            self.logger.error(f"Error processing message: {e}")
+            return json.dumps({"error": str(e)})
     
     def get_agent_skills(self) -> List[AgentSkill]:
         """Return agent skills for the AgentCard."""
@@ -195,13 +244,6 @@ Always aim to produce summaries that would be useful for clinical decision-makin
     def supports_streaming(self) -> bool:
         """Enable streaming for real-time summarization."""
         return True
-    
-    async def process_message(self, message: str) -> str:
-        """
-        This won't be called when tools are provided.
-        The base handles everything via Google ADK LlmAgent.
-        """
-        return "Handled by tool execution"
 
 
 # Module-level app creation for HealthUniverse deployment

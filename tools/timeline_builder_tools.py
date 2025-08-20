@@ -1,33 +1,55 @@
 """
-Timeline builder tools for creating verified clinical timelines.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Timeline builder tools with FIXED signatures for Google ADK compatibility.
+GITHUB ISSUE: Google ADK Tool Signature Fix
+
+Problem: Google ADK cannot parse List[Dict[str, Any]], Dict[str, Any], etc.
+Solution: Use JSON strings for all complex data structures
+
+Changes from timeline_builder_tools.py:
+1. All List/Dict parameters changed to str (JSON)
+2. Default parameters made required or converted to str
+3. Added JSON parsing with error handling
+4. Preserved all original logic
 """
 import json
 import re
-from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
 from google.adk.tools import FunctionTool
 
 
 def build_timeline(
-    facts: List[Dict[str, Any]],
-    verification_mode: str = "full",
-    max_retries: int = 3
+    facts_json: str,  # Changed from List[Dict[str, Any]]
+    verification_mode: str,  # Removed default
+    max_retries: str  # Changed from int with default to str
 ) -> str:
     """
     Build a clinical timeline from extracted facts.
     
-    This function prepares the input for LLM timeline building.
-    The actual LLM call happens in the agent executor.
+    FIXED: Accept JSON string instead of Python list, defaults as required strings.
     
     Args:
-        facts: List of extracted facts with metadata
+        facts_json: JSON string of extracted facts with metadata
         verification_mode: Mode for verification (full, batch, selective)
-        max_retries: Maximum retry attempts for verification
+        max_retries: String number of maximum retry attempts
         
     Returns:
         JSON string with timeline building request
     """
+    # Parse JSON inputs
+    try:
+        facts = json.loads(facts_json)
+        if not isinstance(facts, list):
+            facts = [facts]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for facts"})
+    
+    # Parse max_retries
+    try:
+        max_retries_int = int(max_retries)
+    except (ValueError, TypeError):
+        max_retries_int = 3  # Default
+    
+    # Original logic from here...
     # Group facts by date, considering reconciliation metadata
     facts_by_date = defaultdict(list)
     duplicate_count = 0
@@ -63,7 +85,7 @@ def build_timeline(
     request = {
         "action": "build_timeline",
         "verification_mode": verification_mode,
-        "max_retries": max_retries,
+        "max_retries": max_retries_int,
         "total_facts": len(facts),
         "duplicate_count": duplicate_count,
         "carry_forward_count": carry_forward_count,
@@ -85,25 +107,40 @@ Return timeline events with verified summaries and metadata."""
 
 
 def verify_with_context(
-    event_data: Dict[str, Any],
-    max_retries: int = 3
+    event_data_json: str,  # Changed from Dict[str, Any]
+    max_retries: str  # Changed from int with default to str
 ) -> str:
     """
     Verify timeline event with context and retry mechanism.
     
+    FIXED: Accept JSON string instead of Python dict, int as string.
+    
     Args:
-        event_data: Event data including summary and source text
-        max_retries: Maximum retry attempts
+        event_data_json: JSON string of event data including summary and source text
+        max_retries: String number of maximum retry attempts
         
     Returns:
         JSON string with verification request
     """
+    # Parse JSON inputs
+    try:
+        event_data = json.loads(event_data_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for event_data"})
+    
+    # Parse max_retries
+    try:
+        max_retries_int = int(max_retries)
+    except (ValueError, TypeError):
+        max_retries_int = 3  # Default
+    
+    # Original logic from here...
     request = {
         "action": "verify_with_context",
         "event_date": event_data.get("date", ""),
         "initial_summary": event_data.get("initial_summary", ""),
         "source_text": event_data.get("source_text", "")[:2000],  # Limit for context
-        "max_retries": max_retries,
+        "max_retries": max_retries_int,
         "metadata": event_data.get("metadata", {}),
         "instructions": """Verify this clinical timeline summary for accuracy and completeness.
         
@@ -125,25 +162,52 @@ def verify_with_context(
 
 
 def build_contextual_prompt(
-    event_data: Dict[str, Any],
+    event_data_json: str,  # Changed from Dict[str, Any]
     current_summary: str,
-    context_history: List[Dict[str, Any]],
-    attempt: int,
-    max_retries: int
+    context_history_json: str,  # Changed from List[Dict[str, Any]]
+    attempt: str,  # Changed from int to str
+    max_retries: str  # Changed from int to str
 ) -> str:
     """
     Build verification prompt with context from previous attempts.
     
+    FIXED: Accept JSON strings and string numbers.
+    
     Args:
-        event_data: Original event data
+        event_data_json: JSON string of original event data
         current_summary: Current version of summary
-        context_history: History of previous verification attempts
-        attempt: Current attempt number
-        max_retries: Maximum allowed retries
+        context_history_json: JSON string of previous verification attempts
+        attempt: String number of current attempt
+        max_retries: String number of maximum allowed retries
         
     Returns:
         JSON string with contextual prompt
     """
+    # Parse JSON inputs
+    try:
+        event_data = json.loads(event_data_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for event_data"})
+    
+    try:
+        context_history = json.loads(context_history_json)
+        if not isinstance(context_history, list):
+            context_history = [context_history] if context_history else []
+    except (json.JSONDecodeError, TypeError):
+        context_history = []
+    
+    # Parse numbers
+    try:
+        attempt_int = int(attempt)
+    except (ValueError, TypeError):
+        attempt_int = 0
+    
+    try:
+        max_retries_int = int(max_retries)
+    except (ValueError, TypeError):
+        max_retries_int = 3
+    
+    # Original logic from here...
     base_prompt = f"""
         Verify this clinical timeline summary for accuracy and completeness.
         
@@ -152,7 +216,7 @@ def build_contextual_prompt(
         SOURCE TEXT: {event_data.get('source_text', '')[:2000]}...
         """
     
-    if attempt == 0:
+    if attempt_int == 0:
         # First attempt - standard verification
         verification_focus = """
         
@@ -167,9 +231,9 @@ def build_contextual_prompt(
         # Subsequent attempts - include context history
         context_section = "\nPREVIOUS ATTEMPTS AND ISSUES:\n"
         for ctx in context_history:
-            context_section += f"\nAttempt {ctx['attempt']}:\n"
-            context_section += f"- Summary: {ctx['summary']}\n"
-            context_section += f"- Confidence: {ctx['confidence']:.2f}\n"
+            context_section += f"\nAttempt {ctx.get('attempt', 0)}:\n"
+            context_section += f"- Summary: {ctx.get('summary', '')}\n"
+            context_section += f"- Confidence: {ctx.get('confidence', 0):.2f}\n"
             context_section += f"- Issues: {ctx.get('verification_summary', '')}\n"
             
             issues = ctx.get('issues_found', [])
@@ -178,7 +242,7 @@ def build_contextual_prompt(
         
         verification_focus = context_section + f"""
         
-        VERIFICATION FOCUS (Attempt {attempt + 1}/{max_retries + 1}):
+        VERIFICATION FOCUS (Attempt {attempt_int + 1}/{max_retries_int + 1}):
         This is a revised summary that attempted to address the previous issues.
         Please verify if the issues have been resolved and the summary is now accurate.
         
@@ -192,7 +256,7 @@ def build_contextual_prompt(
     request = {
         "action": "build_contextual_prompt",
         "prompt": base_prompt + verification_focus,
-        "attempt": attempt,
+        "attempt": attempt_int,
         "has_context": len(context_history) > 0
     }
     
@@ -202,19 +266,30 @@ def build_contextual_prompt(
 def generate_contextual_correction(
     current_summary: str,
     source_text: str,
-    context_history: List[Dict[str, Any]]
+    context_history_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Generate improved summary using context from all previous attempts.
     
+    FIXED: Accept JSON string for context history.
+    
     Args:
         current_summary: Current version needing improvement
         source_text: Original source text
-        context_history: History of all verification attempts
+        context_history_json: JSON string of all verification attempts
         
     Returns:
         JSON string with correction request
     """
+    # Parse JSON input
+    try:
+        context_history = json.loads(context_history_json)
+        if not isinstance(context_history, list):
+            context_history = [context_history] if context_history else []
+    except (json.JSONDecodeError, TypeError):
+        context_history = []
+    
+    # Original logic from here...
     # Build a comprehensive view of all issues
     all_issues = []
     for ctx in context_history:
@@ -277,19 +352,37 @@ def generate_contextual_correction(
 
 
 def create_clinical_summary(
-    fact_list: List[str],
-    facts_metadata: List[Dict[str, Any]]
+    fact_list_json: str,  # Changed from List[str]
+    facts_metadata_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Create a clinically-focused summary from multiple facts.
     
+    FIXED: Accept JSON strings instead of Python list.
+    
     Args:
-        fact_list: List of fact summaries
-        facts_metadata: Metadata for each fact (status, provenance, etc.)
+        fact_list_json: JSON string of fact summaries
+        facts_metadata_json: JSON string of metadata for each fact
         
     Returns:
         JSON string with summary creation request
     """
+    # Parse JSON inputs
+    try:
+        fact_list = json.loads(fact_list_json)
+        if not isinstance(fact_list, list):
+            fact_list = [fact_list] if fact_list else []
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for fact_list"})
+    
+    try:
+        facts_metadata = json.loads(facts_metadata_json)
+        if not isinstance(facts_metadata, list):
+            facts_metadata = [facts_metadata] if facts_metadata else []
+    except (json.JSONDecodeError, TypeError):
+        facts_metadata = []
+    
+    # Original logic from here...
     if not fact_list:
         return json.dumps({"action": "create_summary", "summary": "", "fact_count": 0})
     
@@ -332,18 +425,29 @@ If multiple facts: combine intelligently without redundancy"""
 
 def enhance_clinical_fact(
     fact: str,
-    fact_metadata: Optional[Dict[str, Any]] = None
+    fact_metadata_json: str  # Changed from Optional[Dict[str, Any]] with default
 ) -> str:
     """
     Enhance a single fact for clinical relevance.
     
+    FIXED: Accept JSON string for metadata, no optional with default.
+    
     Args:
         fact: Single fact text
-        fact_metadata: Optional metadata about the fact
+        fact_metadata_json: JSON string of metadata or "null"
         
     Returns:
         JSON string with enhancement request
     """
+    # Parse JSON input
+    fact_metadata = {}
+    if fact_metadata_json and fact_metadata_json.lower() != "null":
+        try:
+            fact_metadata = json.loads(fact_metadata_json)
+        except (json.JSONDecodeError, TypeError):
+            fact_metadata = {}
+    
+    # Original logic from here...
     # Clean up the fact
     fact_clean = re.sub(r'^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}:?\s*', '', fact)
     fact_clean = re.sub(r'\s*\(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\)\s*', '', fact_clean)
@@ -357,7 +461,7 @@ def enhance_clinical_fact(
         "action": "enhance_fact",
         "original_fact": fact,
         "cleaned_fact": fact_clean,
-        "metadata": fact_metadata or {},
+        "metadata": fact_metadata,
         "enhanced": fact_clean.strip()
     }
     
@@ -366,18 +470,29 @@ def enhance_clinical_fact(
 
 def prepare_event_data(
     date: str,
-    associated_facts: List[Dict[str, Any]]
+    associated_facts_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Prepare all data needed for verification of a single event.
     
+    FIXED: Accept JSON string instead of Python list.
+    
     Args:
         date: Event date
-        associated_facts: List of facts for this date
+        associated_facts_json: JSON string of facts for this date
         
     Returns:
         JSON string with prepared event data
     """
+    # Parse JSON input
+    try:
+        associated_facts = json.loads(associated_facts_json)
+        if not isinstance(associated_facts, list):
+            associated_facts = [associated_facts] if associated_facts else []
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for associated_facts"})
+    
+    # Original logic from here...
     raw_fact_summaries = [f.get("summary", "") for f in associated_facts]
     source_texts = [f.get("source_chunk", {}).get("content", "") for f in associated_facts]
     source_text_combined = "\n\n".join(source_texts)
@@ -415,6 +530,7 @@ def prepare_event_data(
 
 
 # Create FunctionTool instances for Google ADK
+# All functions now have simple signatures
 build_timeline_tool = FunctionTool(func=build_timeline)
 verify_context_tool = FunctionTool(func=verify_with_context)
 contextual_prompt_tool = FunctionTool(func=build_contextual_prompt)
@@ -423,8 +539,8 @@ create_summary_tool = FunctionTool(func=create_clinical_summary)
 enhance_fact_tool = FunctionTool(func=enhance_clinical_fact)
 prepare_event_tool = FunctionTool(func=prepare_event_data)
 
-# Export all tools
-TIMELINE_BUILDER_TOOLS = [
+# Export all tools with fixed signatures
+TIMELINE_BUILDER_TOOLS_FIXED = [
     build_timeline_tool,
     verify_context_tool,
     contextual_prompt_tool,

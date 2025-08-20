@@ -1,6 +1,7 @@
 """
 Reconciliation tools for fact deduplication and status tagging.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Compatible with Google ADK - all parameters are required.
+Based on legacy implementation with proper parameter handling.
 """
 import json
 import hashlib
@@ -10,8 +11,8 @@ from google.adk.tools import FunctionTool
 
 
 def reconcile_encounter_group(
-    encounter_group: Dict[str, Any],
-    fact_registry: Optional[Dict[str, Any]] = None
+    encounter_group_json: str,  # Changed from Dict[str, Any] to JSON string
+    fact_registry_json: str  # Changed from Optional[Dict[str, Any]] to required JSON string
 ) -> str:
     """
     Reconcile facts within a single encounter group.
@@ -20,13 +21,21 @@ def reconcile_encounter_group(
     The actual LLM call happens in the agent executor.
     
     Args:
-        encounter_group: Dictionary containing encounter data with primary and referenced content
-        fact_registry: Optional registry of previously seen facts for deduplication
+        encounter_group_json: JSON string containing encounter data with primary and referenced content
+        fact_registry_json: JSON string of previously seen facts for deduplication (use "{}" for empty)
         
     Returns:
         JSON string with reconciliation request
     """
-    if fact_registry is None:
+    # Parse JSON inputs
+    try:
+        encounter_group = json.loads(encounter_group_json)
+    except (json.JSONDecodeError, TypeError):
+        encounter_group = {}
+    
+    try:
+        fact_registry = json.loads(fact_registry_json) if fact_registry_json else {}
+    except (json.JSONDecodeError, TypeError):
         fact_registry = {}
     
     # Process all content from this encounter
@@ -117,17 +126,25 @@ def reconcile_encounter_group(
 
 
 def cross_encounter_reconciliation(
-    reconciled_groups: List[Dict[str, Any]]
+    reconciled_groups_json: str  # Changed from List[Dict[str, Any]] to JSON string
 ) -> str:
     """
     Perform cross-encounter reconciliation to identify facts across encounters.
     
     Args:
-        reconciled_groups: List of reconciled encounter groups
+        reconciled_groups_json: JSON string of reconciled encounter groups
         
     Returns:
         JSON string with cross-encounter analysis
     """
+    # Parse JSON input
+    try:
+        reconciled_groups = json.loads(reconciled_groups_json)
+        if not isinstance(reconciled_groups, list):
+            reconciled_groups = []
+    except (json.JSONDecodeError, TypeError):
+        reconciled_groups = []
+    
     # Build a map of content hashes to facts across all encounters
     content_map = defaultdict(list)
     
@@ -174,19 +191,27 @@ def cross_encounter_reconciliation(
 
 
 def llm_reconciliation(
-    content_items: List[Dict[str, Any]],
-    encounter_date: str
+    content_items_json: str,  # Changed from List[Dict[str, Any]] to JSON string
+    encounter_date: str  # Already a required string
 ) -> str:
     """
     Use LLM to analyze and reconcile content items.
     
     Args:
-        content_items: List of content items to reconcile
+        content_items_json: JSON string of content items to reconcile
         encounter_date: Date of the encounter
         
     Returns:
         JSON string with LLM reconciliation request
     """
+    # Parse JSON input
+    try:
+        content_items = json.loads(content_items_json)
+        if not isinstance(content_items, list):
+            content_items = []
+    except (json.JSONDecodeError, TypeError):
+        content_items = []
+    
     # Prepare content for LLM analysis
     content_list = []
     for i, item in enumerate(content_items):
@@ -252,17 +277,25 @@ def llm_reconciliation(
 
 
 def generate_reconciliation_summary(
-    reconciled_groups: List[Dict[str, Any]]
+    reconciled_groups_json: str  # Changed from List[Dict[str, Any]] to JSON string
 ) -> str:
     """
     Generate a summary of the reconciliation process.
     
     Args:
-        reconciled_groups: List of reconciled encounter groups
+        reconciled_groups_json: JSON string of reconciled encounter groups
         
     Returns:
         JSON string with reconciliation summary
     """
+    # Parse JSON input
+    try:
+        reconciled_groups = json.loads(reconciled_groups_json)
+        if not isinstance(reconciled_groups, list):
+            reconciled_groups = []
+    except (json.JSONDecodeError, TypeError):
+        reconciled_groups = []
+    
     total_facts = sum(len(g.get("reconciled_facts", [])) for g in reconciled_groups)
     total_duplicates = sum(g.get("duplicate_count", 0) for g in reconciled_groups)
     total_carry_forward = sum(g.get("carry_forward_count", 0) for g in reconciled_groups)
@@ -304,7 +337,7 @@ cross_encounter_tool = FunctionTool(func=cross_encounter_reconciliation)
 llm_reconciliation_tool = FunctionTool(func=llm_reconciliation)
 summary_tool = FunctionTool(func=generate_reconciliation_summary)
 
-# Export all tools
+# Export all tools - matching the legacy version
 RECONCILIATION_TOOLS = [
     reconcile_group_tool,
     cross_encounter_tool,

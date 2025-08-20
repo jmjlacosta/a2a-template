@@ -19,6 +19,7 @@ from typing import List
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
+
 from tools.keyword_tools import KEYWORD_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler

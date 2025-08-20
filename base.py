@@ -80,13 +80,17 @@ class A2AAgent(AgentExecutor, ABC):
             url="",
             provider=AgentProvider(
                 name="A2AAgent",
-                version="1.0.0"
+                version="1.0.0",
+                organization="A2A Template",
+                url="https://github.com/jmjlacosta/a2a-template"
             ),
             skills=self.get_agent_skills(),
             capabilities=AgentCapabilities(
                 streaming=self.supports_streaming(),
                 push_notifications=self.supports_push_notifications()
-            )
+            ),
+            defaultInputModes=["text/plain"],
+            defaultOutputModes=["text/plain"]
         )
     
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:

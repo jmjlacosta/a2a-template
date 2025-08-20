@@ -12,6 +12,7 @@ This agent provides intelligent pattern searching with:
 
 import os
 import sys
+import json
 from pathlib import Path
 from typing import List
 
@@ -19,6 +20,7 @@ from typing import List
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
+
 from tools.grep_tools import GREP_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -90,6 +92,51 @@ Always aim to return useful results even when encountering errors."""
         """Return the grep search tools."""
         return GREP_TOOLS
     
+    async def process_message(self, message: str) -> str:
+        """
+        Process incoming messages directly when not using LLM tools.
+        Handles JSON messages from orchestrators.
+        """
+        self.logger.info(f"grep_agent.process_message called with: {message[:100]}...")
+        try:
+            # Try to parse as JSON
+            data = json.loads(message)
+            self.logger.info(f"Parsed JSON successfully. Keys: {list(data.keys())}")
+            
+            # Check if this is a grep request
+            if "patterns" in data and ("document_content" in data or "file_content" in data):
+                # Direct grep request from orchestrator
+                patterns = data.get("patterns", [])
+                document_content = data.get("document_content") or data.get("file_content", "")
+                case_sensitive = data.get("case_sensitive", False)
+                
+                # Call the search tool directly
+                from tools.grep_tools import search_medical_patterns
+                
+                result = search_medical_patterns(
+                    file_path="document.txt",
+                    patterns_json=json.dumps(patterns),
+                    case_sensitive=str(case_sensitive).lower(),
+                    max_matches="50",
+                    context_lines="3",
+                    file_content=document_content
+                )
+                
+                self.logger.info(f"Returning JSON result from tool: {result[:200]}...")
+                return result
+            else:
+                # Fall back to LLM processing - just return the message
+                self.logger.info("Not a grep request, returning message for LLM processing")
+                return message
+                
+        except json.JSONDecodeError:
+            # Not JSON, use LLM processing - just return the message
+            self.logger.info("Not JSON, returning message for LLM processing")
+            return message
+        except Exception as e:
+            self.logger.error(f"Error processing message: {e}")
+            return json.dumps({"error": str(e)})
+    
     def get_agent_skills(self) -> List[AgentSkill]:
         """Return agent skills for the AgentCard."""
         return [
@@ -152,13 +199,6 @@ Always aim to return useful results even when encountering errors."""
     def supports_streaming(self) -> bool:
         """Enable streaming for real-time updates."""
         return True
-    
-    async def process_message(self, message: str) -> str:
-        """
-        This won't be called when tools are provided.
-        The base handles everything via Google ADK LlmAgent.
-        """
-        return "Handled by tool execution"
 
 
 # Module-level app creation for HealthUniverse deployment

@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
 from google.adk.tools import FunctionTool
+# GITHUB ISSUE FIX: Using fixed tools with simplified signatures
+# Original tools had List[Dict[str, Any]] which Google ADK cannot parse
 from tools.temporal_tools import (
     extract_temporal_information,
     consolidate_temporal_data,

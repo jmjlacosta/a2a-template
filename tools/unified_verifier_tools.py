@@ -1,41 +1,94 @@
 """
-Unified verification tools for verifying extracted clinical data.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Unified verification tools with FIXED signatures for Google ADK compatibility.
+GITHUB ISSUE: Google ADK Tool Signature Fix
+
+Problem: Google ADK cannot parse Dict[str, Any], List[Dict[str, Any]], etc.
+Solution: Use JSON strings for all complex data structures
+
+Changes from unified_verifier_tools.py:
+1. All Dict/List parameters changed to str (JSON)
+2. Optional parameters made required or converted to str
+3. Added JSON parsing with error handling
+4. Preserved all original logic
 """
 import json
-from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime, timedelta
 from google.adk.tools import FunctionTool
 
 
+def ensure_json_string(data):
+    """
+    Helper function to ensure data is a JSON string.
+    
+    Handles various input types:
+    - If already a string, try to validate it's valid JSON
+    - If a dict/list, convert to JSON string
+    - If None or empty, return empty JSON object/array
+    """
+    if data is None:
+        return "{}"
+    
+    if isinstance(data, str):
+        # Validate it's valid JSON
+        try:
+            json.loads(data)
+            return data
+        except json.JSONDecodeError:
+            # Not valid JSON, wrap as string
+            return json.dumps(data)
+    
+    # Convert Python objects to JSON
+    try:
+        return json.dumps(data)
+    except (TypeError, ValueError):
+        return "{}"
+
+
 def verify_diagnoses(
-    diagnosis_data: Dict[str, Any],
-    timeline_events: List[Dict[str, Any]]
+    diagnosis_data_json: str,  # Changed from Dict[str, Any]
+    timeline_events_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Verify diagnoses with special attention to cancer staging.
     
-    This function prepares the input for LLM diagnosis verification.
-    The actual LLM call happens in the agent executor.
+    FIXED: Accept JSON strings instead of Python dict/list.
     
     Args:
-        diagnosis_data: Extracted diagnosis data to verify
-        timeline_events: Source timeline events
+        diagnosis_data_json: JSON string of diagnosis data to verify
+        timeline_events_json: JSON string of timeline events
         
     Returns:
         JSON string with verification request
     """
+    # Ensure inputs are valid JSON strings
+    diagnosis_data_json = ensure_json_string(diagnosis_data_json)
+    timeline_events_json = ensure_json_string(timeline_events_json)
+    
+    # Parse JSON inputs
+    try:
+        diagnosis_data = json.loads(diagnosis_data_json)
+    except (json.JSONDecodeError, TypeError):
+        diagnosis_data = {}
+    
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events] if timeline_events else []
+    except (json.JSONDecodeError, TypeError):
+        timeline_events = []
+    
+    # Original logic from here...
     # Create timeline lookup
-    timeline_lookup = create_timeline_lookup(timeline_events)
+    timeline_lookup = create_timeline_lookup_internal(timeline_events)
     
     # Prepare verification requests
     verification_requests = []
     for diagnosis in diagnosis_data.get("diagnoses", []):
         date_str = diagnosis.get("date", "")
-        matching_events = find_matching_events(date_str, timeline_lookup, search_nearby=False)
+        matching_events = find_matching_events_internal(date_str, timeline_lookup, search_nearby=False)
         
         if matching_events:
-            combined_source, actual_sources, actual_pages = get_source_info(matching_events)
+            combined_source, actual_sources, actual_pages = get_source_info_internal(matching_events)
             
             # Check if this appears to be a cancer diagnosis
             cancer_keywords = ["cancer", "carcinoma", "adenocarcinoma", "squamous cell", "lymphoma",
@@ -87,21 +140,37 @@ def verify_diagnoses(
 
 
 def verify_treatments(
-    treatment_data: Dict[str, Any],
-    timeline_events: List[Dict[str, Any]]
+    treatment_data_json: str,  # Changed from Dict[str, Any]
+    timeline_events_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Verify treatments against source timeline events.
     
+    FIXED: Accept JSON strings instead of Python dict/list.
+    
     Args:
-        treatment_data: Extracted treatment data to verify
-        timeline_events: Source timeline events
+        treatment_data_json: JSON string of treatment data to verify
+        timeline_events_json: JSON string of timeline events
         
     Returns:
         JSON string with verification request
     """
+    # Parse JSON inputs
+    try:
+        treatment_data = json.loads(treatment_data_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for treatment_data"})
+    
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_events"})
+    
+    # Original logic from here...
     # Create timeline lookup
-    timeline_lookup = create_timeline_lookup(timeline_events)
+    timeline_lookup = create_timeline_lookup_internal(timeline_events)
     
     # Prepare verification requests
     verification_requests = []
@@ -110,10 +179,10 @@ def verify_treatments(
         # Handle date ranges
         lookup_date = date_str.split(" - ")[0] if " - " in date_str else date_str
         
-        matching_events = find_matching_events(lookup_date, timeline_lookup, search_nearby=False)
+        matching_events = find_matching_events_internal(lookup_date, timeline_lookup, search_nearby=False)
         
         if matching_events:
-            combined_source, actual_sources, actual_pages = get_source_info(matching_events)
+            combined_source, actual_sources, actual_pages = get_source_info_internal(matching_events)
             verification_requests.append({
                 "treatment": treatment,
                 "source_text": combined_source,
@@ -160,30 +229,46 @@ def verify_treatments(
 
 
 def verify_complications(
-    complications_data: Dict[str, Any],
-    timeline_events: List[Dict[str, Any]]
+    complications_data_json: str,  # Changed from Dict[str, Any]
+    timeline_events_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Verify complications against source timeline events.
     
+    FIXED: Accept JSON strings instead of Python dict/list.
+    
     Args:
-        complications_data: Extracted complications data to verify
-        timeline_events: Source timeline events
+        complications_data_json: JSON string of complications data to verify
+        timeline_events_json: JSON string of timeline events
         
     Returns:
         JSON string with verification request
     """
+    # Parse JSON inputs
+    try:
+        complications_data = json.loads(complications_data_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for complications_data"})
+    
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_events"})
+    
+    # Original logic from here...
     # Create timeline lookup
-    timeline_lookup = create_timeline_lookup(timeline_events)
+    timeline_lookup = create_timeline_lookup_internal(timeline_events)
     
     # Prepare verification requests
     verification_requests = []
     for complication in complications_data.get("complications", []):
         date_str = complication.get("date", "")
-        matching_events = find_matching_events(date_str, timeline_lookup, search_nearby=True)
+        matching_events = find_matching_events_internal(date_str, timeline_lookup, search_nearby=True)
         
         if matching_events:
-            combined_source, actual_sources, actual_pages = get_source_info(matching_events)
+            combined_source, actual_sources, actual_pages = get_source_info_internal(matching_events)
             verification_requests.append({
                 "complication": complication,
                 "source_text": combined_source,
@@ -227,30 +312,46 @@ def verify_complications(
 
 
 def verify_response_metrics(
-    response_metrics_data: Dict[str, Any],
-    timeline_events: List[Dict[str, Any]]
+    response_metrics_data_json: str,  # Changed from Dict[str, Any]
+    timeline_events_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Verify response metrics against source timeline events.
     
+    FIXED: Accept JSON strings instead of Python dict/list.
+    
     Args:
-        response_metrics_data: Extracted response metrics to verify
-        timeline_events: Source timeline events
+        response_metrics_data_json: JSON string of response metrics to verify
+        timeline_events_json: JSON string of timeline events
         
     Returns:
         JSON string with verification request
     """
+    # Parse JSON inputs
+    try:
+        response_metrics_data = json.loads(response_metrics_data_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for response_metrics_data"})
+    
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_events"})
+    
+    # Original logic from here...
     # Create timeline lookup
-    timeline_lookup = create_timeline_lookup(timeline_events)
+    timeline_lookup = create_timeline_lookup_internal(timeline_events)
     
     # Prepare verification requests
     verification_requests = []
     for metric in response_metrics_data.get("response_metrics", []):
         date_str = metric.get("date", "")
-        matching_events = find_matching_events(date_str, timeline_lookup, search_nearby=True)
+        matching_events = find_matching_events_internal(date_str, timeline_lookup, search_nearby=True)
         
         if matching_events:
-            combined_source, actual_sources, actual_pages = get_source_info(matching_events)
+            combined_source, actual_sources, actual_pages = get_source_info_internal(matching_events)
             verification_requests.append({
                 "metric": metric,
                 "source_text": combined_source,
@@ -294,19 +395,35 @@ def verify_response_metrics(
 
 
 def verify_demographics(
-    demographics_data: Dict[str, Any],
-    timeline_events: List[Dict[str, Any]]
+    demographics_data_json: str,  # Changed from Dict[str, Any]
+    timeline_events_json: str  # Changed from List[Dict[str, Any]]
 ) -> str:
     """
     Verify demographics against source timeline events.
     
+    FIXED: Accept JSON strings instead of Python dict/list.
+    
     Args:
-        demographics_data: Extracted demographics to verify
-        timeline_events: Source timeline events
+        demographics_data_json: JSON string of demographics to verify
+        timeline_events_json: JSON string of timeline events
         
     Returns:
         JSON string with verification request
     """
+    # Parse JSON inputs
+    try:
+        demographics_data = json.loads(demographics_data_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for demographics_data"})
+    
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_events"})
+    
+    # Original logic from here...
     # Combine all timeline text for verification
     all_timeline_text = []
     for event in timeline_events:
@@ -354,22 +471,48 @@ def verify_demographics(
 
 def verify_patient_headline(
     headline: str,
-    timeline_events: List[Dict[str, Any]],
-    verified_diagnoses: List[Dict[str, Any]],
-    demographics_data: Optional[Dict[str, Any]] = None
+    timeline_events_json: str,  # Changed from List[Dict[str, Any]]
+    verified_diagnoses_json: str,  # Changed from List[Dict[str, Any]]
+    demographics_data_json: str  # Changed from Optional[Dict[str, Any]] with default
 ) -> str:
     """
     Verify patient headline against source records and verified demographics.
     
+    FIXED: Accept JSON strings instead of Python dict/list, removed optional with default.
+    
     Args:
         headline: Generated headline to verify
-        timeline_events: Source timeline events
-        verified_diagnoses: Already verified diagnoses
-        demographics_data: Optional demographics information
+        timeline_events_json: JSON string of timeline events
+        verified_diagnoses_json: JSON string of verified diagnoses
+        demographics_data_json: JSON string of demographics or "null"
         
     Returns:
         JSON string with verification request
     """
+    # Parse JSON inputs
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_events"})
+    
+    try:
+        verified_diagnoses = json.loads(verified_diagnoses_json)
+        if not isinstance(verified_diagnoses, list):
+            verified_diagnoses = [verified_diagnoses]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for verified_diagnoses"})
+    
+    # Handle demographics which can be null
+    demographics_data = None
+    if demographics_data_json and demographics_data_json.lower() != "null":
+        try:
+            demographics_data = json.loads(demographics_data_json)
+        except (json.JSONDecodeError, TypeError):
+            demographics_data = None
+    
+    # Original logic from here...
     # Gather timeline summaries
     all_summaries = []
     for event in timeline_events[:20]:
@@ -379,7 +522,7 @@ def verify_patient_headline(
     
     # Include verified diagnoses
     diagnosis_text = "\n".join([
-        f"{d['date']}: {d['summary']}"
+        f"{d.get('date', '')}: {d.get('summary', '')}"
         for d in verified_diagnoses[:5]
     ])
     
@@ -432,17 +575,27 @@ def verify_patient_headline(
     return json.dumps(request)
 
 
-# Helper functions
-def create_timeline_lookup(timeline_events: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def create_timeline_lookup(timeline_events_json: str) -> str:  # Changed from List[Dict[str, Any]]
     """
     Create a lookup dictionary of timeline events by date.
     
+    FIXED: Accept JSON string instead of Python list.
+    
     Args:
-        timeline_events: List of timeline events
+        timeline_events_json: JSON string of timeline events
         
     Returns:
-        Dictionary mapping dates to lists of events
+        JSON string with timeline lookup
     """
+    # Parse JSON input
+    try:
+        timeline_events = json.loads(timeline_events_json)
+        if not isinstance(timeline_events, list):
+            timeline_events = [timeline_events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_events"})
+    
+    # Original logic from here...
     timeline_lookup = {}
     for event in timeline_events:
         date = event.get("date", "")
@@ -450,25 +603,41 @@ def create_timeline_lookup(timeline_events: List[Dict[str, Any]]) -> Dict[str, L
             timeline_lookup[date] = []
         timeline_lookup[date].append(event)
     
-    return timeline_lookup
+    return json.dumps({
+        "timeline_lookup": timeline_lookup,
+        "total_dates": len(timeline_lookup),
+        "total_events": len(timeline_events)
+    })
 
 
 def find_matching_events(
     date_str: str,
-    timeline_lookup: Dict[str, List[Dict[str, Any]]],
-    search_nearby: bool = True
-) -> List[Dict[str, Any]]:
+    timeline_lookup_json: str,  # Changed from Dict[str, List[Dict[str, Any]]]
+    search_nearby: str  # Changed from bool with default to str
+) -> str:
     """
     Find timeline events matching a date, optionally searching nearby dates.
     
+    FIXED: Accept JSON string for lookup, bool as string.
+    
     Args:
         date_str: Date to search for
-        timeline_lookup: Timeline lookup dictionary
-        search_nearby: Whether to search nearby dates
+        timeline_lookup_json: JSON string of timeline lookup dictionary
+        search_nearby: String "true" or "false" for searching nearby dates
         
     Returns:
-        List of matching events
+        JSON string with matching events
     """
+    # Parse JSON inputs
+    try:
+        timeline_lookup = json.loads(timeline_lookup_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for timeline_lookup"})
+    
+    # Parse search_nearby
+    search_nearby_bool = search_nearby.lower() == "true"
+    
+    # Original logic from here...
     matching_events = []
     
     # Try exact date match first
@@ -480,7 +649,7 @@ def find_matching_events(
         matching_events.extend(timeline_lookup["Background Information"])
     
     # Search nearby dates if requested
-    if search_nearby and not matching_events:
+    if search_nearby_bool and not matching_events:
         try:
             target_date = datetime.strptime(date_str, "%m/%d/%Y")
             for days_offset in [-1, 1, -2, 2, -3, 3]:
@@ -491,19 +660,34 @@ def find_matching_events(
         except:
             pass
     
-    return matching_events
+    return json.dumps({
+        "matching_events": matching_events,
+        "total_matches": len(matching_events),
+        "searched_nearby": search_nearby_bool
+    })
 
 
-def get_source_info(events: List[Dict[str, Any]]) -> Tuple[str, Set[str], Set[int]]:
+def get_source_info(events_json: str) -> str:  # Changed from List[Dict[str, Any]]
     """
     Extract combined source text and metadata from events.
     
+    FIXED: Accept JSON string instead of Python list.
+    
     Args:
-        events: List of timeline events
+        events_json: JSON string of timeline events
         
     Returns:
-        Tuple of (combined_source_text, source_documents_set, source_pages_set)
+        JSON string with source information
     """
+    # Parse JSON input
+    try:
+        events = json.loads(events_json)
+        if not isinstance(events, list):
+            events = [events]
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for events"})
+    
+    # Original logic from here...
     source_texts = []
     actual_sources = set()
     actual_pages = set()
@@ -514,7 +698,12 @@ def get_source_info(events: List[Dict[str, Any]]) -> Tuple[str, Set[str], Set[in
         actual_pages.update(event.get("source_pages", []))
     
     combined_source = " ".join(source_texts)
-    return combined_source, actual_sources, actual_pages
+    
+    return json.dumps({
+        "combined_source": combined_source,
+        "source_documents": list(actual_sources),
+        "source_pages": list(actual_pages)
+    })
 
 
 def search_for_missing_demographic(
@@ -561,18 +750,25 @@ def search_for_missing_demographic(
     return json.dumps(request)
 
 
-def create_verification_summary(
-    verification_results: Dict[str, Any]
-) -> str:
+def create_verification_summary(verification_results_json: str) -> str:  # Changed from Dict[str, Any]
     """
     Create a summary of all verification results.
     
+    FIXED: Accept JSON string instead of Python dict.
+    
     Args:
-        verification_results: Dictionary containing all verification results
+        verification_results_json: JSON string of all verification results
         
     Returns:
         JSON string with verification summary
     """
+    # Parse JSON input
+    try:
+        verification_results = json.loads(verification_results_json)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON input for verification_results"})
+    
+    # Original logic from here...
     summary = {
         "action": "create_summary",
         "total_items_verified": 0,
@@ -643,7 +839,62 @@ def create_verification_summary(
     return json.dumps(summary)
 
 
+# Internal helper functions (not exposed as tools) - unchanged from original
+def create_timeline_lookup_internal(timeline_events):
+    """Internal version for use within functions."""
+    timeline_lookup = {}
+    for event in timeline_events:
+        date = event.get("date", "")
+        if date not in timeline_lookup:
+            timeline_lookup[date] = []
+        timeline_lookup[date].append(event)
+    return timeline_lookup
+
+
+def find_matching_events_internal(date_str, timeline_lookup, search_nearby=True):
+    """Internal version for use within functions."""
+    matching_events = []
+    
+    # Try exact date match first
+    if date_str in timeline_lookup:
+        matching_events.extend(timeline_lookup[date_str])
+    
+    # Check Background Information for undated items
+    if "Background Information" in timeline_lookup:
+        matching_events.extend(timeline_lookup["Background Information"])
+    
+    # Search nearby dates if requested
+    if search_nearby and not matching_events:
+        try:
+            target_date = datetime.strptime(date_str, "%m/%d/%Y")
+            for days_offset in [-1, 1, -2, 2, -3, 3]:
+                nearby_date = target_date + timedelta(days=days_offset)
+                nearby_date_str = nearby_date.strftime("%m/%d/%Y")
+                if nearby_date_str in timeline_lookup:
+                    matching_events.extend(timeline_lookup[nearby_date_str])
+        except:
+            pass
+    
+    return matching_events
+
+
+def get_source_info_internal(events):
+    """Internal version for use within functions."""
+    source_texts = []
+    actual_sources = set()
+    actual_pages = set()
+    
+    for event in events:
+        source_texts.append(event.get("summary", ""))
+        actual_sources.update(event.get("source_documents", []))
+        actual_pages.update(event.get("source_pages", []))
+    
+    combined_source = " ".join(source_texts)
+    return combined_source, actual_sources, actual_pages
+
+
 # Create FunctionTool instances for Google ADK
+# All functions now have simple signatures
 verify_diagnoses_tool = FunctionTool(func=verify_diagnoses)
 verify_treatments_tool = FunctionTool(func=verify_treatments)
 verify_complications_tool = FunctionTool(func=verify_complications)
@@ -656,8 +907,8 @@ get_source_info_tool = FunctionTool(func=get_source_info)
 search_demographic_tool = FunctionTool(func=search_for_missing_demographic)
 create_summary_tool = FunctionTool(func=create_verification_summary)
 
-# Export all tools
-UNIFIED_VERIFIER_TOOLS = [
+# Export all tools with fixed signatures
+UNIFIED_VERIFIER_TOOLS_FIXED = [
     verify_diagnoses_tool,
     verify_treatments_tool,
     verify_complications_tool,

@@ -236,7 +236,72 @@ class A2AAgentClient:
             if "status" in task_result:
                 status = task_result["status"]
                 if status.get("state") == "working":
-                    # For simplicity, return status message
+                    # Task is still working, need to poll for completion
+                    task_id = task_result.get("taskId")
+                    if task_id:
+                        logger.info(f"Task {task_id} is working, polling for completion...")
+                        
+                        # Poll for task completion
+                        max_polls = 60  # Poll for up to 60 seconds
+                        poll_interval = 1.0  # Poll every second
+                        
+                        for i in range(max_polls):
+                            await asyncio.sleep(poll_interval)
+                            
+                            # Get task status (per A2A spec, it's "tasks/get" not "task/get")
+                            status_request = {
+                                "jsonrpc": "2.0",
+                                "method": "tasks/get",
+                                "params": {
+                                    "id": task_id  # Per spec, parameter is "id" not "taskId"
+                                },
+                                "id": str(uuid.uuid4())
+                            }
+                            
+                            status_response = await client.post(
+                                agent_url,
+                                json=status_request,
+                                headers={**self.headers, "Content-Type": "application/json"},
+                                timeout=5.0  # Short timeout for status checks
+                            )
+                            status_response.raise_for_status()
+                            status_result = status_response.json()
+                            
+                            if "result" in status_result:
+                                task_status = status_result["result"]
+                                state = task_status.get("status", {}).get("state")
+                                
+                                logger.debug(f"Poll {i+1}: Task state is {state}")
+                                
+                                if state == "completed":
+                                    # Task completed, extract response
+                                    if "artifacts" in task_status and task_status["artifacts"]:
+                                        artifact = task_status["artifacts"][0]
+                                        if "parts" in artifact and artifact["parts"]:
+                                            part = artifact["parts"][0]
+                                            if "text" in part:
+                                                logger.info(f"Task {task_id} completed successfully")
+                                                return part["text"]
+                                    
+                                    # Check history as fallback
+                                    if "history" in task_status and task_status["history"]:
+                                        last_msg = task_status["history"][-1]
+                                        if "parts" in last_msg and last_msg["parts"]:
+                                            part = last_msg["parts"][0]
+                                            if "text" in part:
+                                                logger.info(f"Task {task_id} completed successfully (from history)")
+                                                return part["text"]
+                                    
+                                    return "Task completed but no text response found"
+                                
+                                elif state == "failed":
+                                    error_msg = task_status.get("status", {}).get("error", "Unknown error")
+                                    raise Exception(f"Task {task_id} failed: {error_msg}")
+                        
+                        # Timeout reached
+                        raise TimeoutError(f"Task {task_id} did not complete within {max_polls} seconds")
+                    
+                    # No task ID, can't poll
                     return "Agent is processing your request..."
         
         return "No response from agent"
