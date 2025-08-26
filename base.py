@@ -31,6 +31,7 @@ from a2a.types import (
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError, InvalidParamsError
 from utils.logging import get_logger
+from utils.message_utils import create_message_parts, create_agent_message, extract_content_from_parts
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +176,20 @@ class A2AAgent(AgentExecutor, ABC):
             # This is where agents implement their specific functionality
             response = await self.process_message(message)
             
+            # Create appropriate message type based on response
+            # Use DataPart for structured data, TextPart for strings
+            if isinstance(response, (dict, list)):
+                # Structured data should use DataPart
+                response_message = create_agent_message(response, role="agent")
+            else:
+                # String responses use TextPart
+                response_message = new_agent_text_message(str(response))
+            
             # Mark task as completed with the response attached
             # Per spec, attach final response to Task completion
             await updater.update_status(
                 TaskState.completed,
-                new_agent_text_message(response)
+                response_message
             )
             
         except ServerError as e:
@@ -596,6 +606,64 @@ class A2AAgent(AgentExecutor, ABC):
             
             # Final fallback
             return str(result)
+            
+        finally:
+            # Clean up client connection
+            await client.close()
+    
+    async def call_other_agent_with_data(
+        self, 
+        agent_name_or_url: str, 
+        data: Any, 
+        timeout: float = 30.0
+    ) -> Any:
+        """
+        Call another A2A-compliant agent with structured data.
+        
+        This method properly formats structured data using DataPart
+        for inter-agent communication, ensuring compatibility with
+        agents expecting structured data in the 'data' field.
+        
+        Args:
+            agent_name_or_url: Agent name (from registry) or direct URL
+            data: Structured data (dict, list, or string) to send
+            timeout: Request timeout in seconds
+            
+        Returns:
+            Response from the other agent (structured or string)
+            
+        Raises:
+            Exception: If agent communication fails
+        """
+        from utils.a2a_client import A2AClient
+        
+        # Create client based on input type
+        if agent_name_or_url.startswith(('http://', 'https://')):
+            client = A2AClient(agent_name_or_url)
+            self.logger.info(f"Calling agent at URL: {agent_name_or_url}")
+        else:
+            try:
+                client = A2AClient.from_registry(agent_name_or_url)
+                self.logger.info(f"Calling agent '{agent_name_or_url}' from registry")
+            except ValueError as e:
+                raise ValueError(f"Failed to resolve agent '{agent_name_or_url}': {e}")
+        
+        try:
+            # Use proper Part construction for structured data
+            if isinstance(data, str):
+                # For strings, use regular message sending
+                result = await client.send_message(data, timeout_sec=timeout)
+            else:
+                # For structured data, send with proper DataPart formatting
+                result = await client.send_data(data, timeout_sec=timeout)
+            
+            # Extract content from response parts if needed
+            if isinstance(result, dict) and "message" in result:
+                msg = result["message"]
+                if isinstance(msg, dict) and "parts" in msg:
+                    return extract_content_from_parts(msg["parts"])
+            
+            return result
             
         finally:
             # Clean up client connection

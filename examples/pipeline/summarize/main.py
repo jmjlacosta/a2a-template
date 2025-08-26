@@ -16,7 +16,7 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from utils.logging import get_logger, setup_logging
-from .summarize_agent import SummarizeAgent
+from examples.pipeline.summarize.summarize_agent import SummarizeAgent
 
 # Setup logging first
 setup_logging()

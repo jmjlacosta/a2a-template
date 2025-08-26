@@ -236,6 +236,75 @@ class A2AClient:
                 return "\n".join(texts)
         
         return str(result)
+    
+    async def send_data(self, data: Any, timeout_sec: Optional[float] = None) -> Any:
+        """
+        Send structured data to the agent using DataPart.
+        
+        This method properly formats structured data as a DataPart
+        with kind="data", ensuring compatibility with agents that
+        expect structured data in the data field rather than as
+        serialized JSON text.
+        
+        Args:
+            data: Structured data (dict, list, etc.) to send
+            timeout_sec: Request timeout
+            
+        Returns:
+            Response from agent (structured or text)
+        """
+        import uuid
+        
+        # Create message with DataPart for structured data
+        message_dict = {
+            "role": "user",
+            "parts": [{"kind": "data", "data": data}],
+            "kind": "message",
+            "messageId": str(uuid.uuid4())
+        }
+        
+        # Send via JSON-RPC
+        params = {
+            "message": message_dict,
+            "metadata": {}
+        }
+        
+        result = await self._request_jsonrpc("message/send", params, timeout_sec=timeout_sec)
+        
+        # Try to extract structured data from response
+        if isinstance(result, dict):
+            # Check for message with DataPart
+            msg = result.get("message") or result.get("result", {}).get("message")
+            if isinstance(msg, dict):
+                parts = msg.get("parts", [])
+                for part in parts:
+                    if part.get("kind") == "data":
+                        return part.get("data")
+                
+                # Fall back to text parts
+                texts = []
+                for part in parts:
+                    if part.get("kind") == "text":
+                        text = part.get("text", "")
+                        # Try to parse as JSON if it looks like JSON
+                        if text.strip().startswith(("{", "[")):
+                            try:
+                                return json.loads(text)
+                            except json.JSONDecodeError:
+                                pass
+                        texts.append(text)
+                
+                if texts:
+                    combined = "\n".join(texts)
+                    # Try to parse combined text as JSON
+                    if combined.strip().startswith(("{", "[")):
+                        try:
+                            return json.loads(combined)
+                        except json.JSONDecodeError:
+                            pass
+                    return combined
+        
+        return result
 
 
 # Convenience function for backwards compatibility

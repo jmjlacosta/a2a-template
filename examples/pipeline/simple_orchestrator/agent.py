@@ -8,6 +8,7 @@ import json
 import os
 import time
 import logging
+import ast
 from typing import List, Dict, Any, Optional
 
 from a2a.types import AgentSkill, Message, DataPart, TextPart, TaskState
@@ -17,6 +18,7 @@ from a2a.server.tasks import TaskUpdater
 from a2a.utils import new_agent_text_message
 from base import A2AAgent
 from utils.logging import get_logger
+from utils.message_utils import create_data_part, create_agent_message
 
 logger = get_logger(__name__)
 
@@ -242,7 +244,35 @@ class SimpleOrchestratorAgent(A2AAgent):
                 keyword_msg,
                 timeout=self.CALL_TIMEOUT_SEC
             )
+            
+            # Debug: Save keyword response to file for analysis
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            debug_file = f"/tmp/keyword_response_{timestamp}.json"
+            try:
+                with open(debug_file, 'w') as f:
+                    f.write(f"=== KEYWORD AGENT RESPONSE ===\n")
+                    f.write(f"Timestamp: {timestamp}\n")
+                    f.write(f"Response Type: {type(response)}\n")
+                    f.write(f"Response Length: {len(str(response))}\n")
+                    f.write(f"\n=== RAW RESPONSE ===\n")
+                    f.write(str(response))
+                    f.write(f"\n\n=== ATTEMPTING JSON PARSE ===\n")
+                    try:
+                        import json as json_module
+                        parsed = json_module.loads(response)
+                        f.write("JSON Parse: SUCCESS\n")
+                        f.write(f"Keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'Not a dict'}\n")
+                        f.write(f"\n=== PRETTY JSON ===\n")
+                        f.write(json_module.dumps(parsed, indent=2))
+                    except Exception as parse_error:
+                        f.write(f"JSON Parse: FAILED - {parse_error}\n")
+                self.logger.info(f"📝 DEBUG: Keyword response saved to {debug_file}")
+            except Exception as debug_error:
+                self.logger.warning(f"Could not save debug file: {debug_error}")
+            
             patterns = self._extract_patterns(response)
+            self.logger.info(f"📊 Extracted {len(patterns)} patterns from keyword agent response")
         except Exception as e:
             self.logger.warning(f"Keyword agent error: {e}, using fallback patterns")
             patterns = self._get_fallback_patterns()
@@ -345,15 +375,89 @@ class SimpleOrchestratorAgent(A2AAgent):
         
         return summary
 
+    # --- Helper Methods for Part Extraction ---
+    def _iter_messages(self, envelope: Any) -> List[Dict[str, Any]]:
+        """Yield all message dicts from Task or Message structures."""
+        messages = []
+        
+        # Handle string representation of dict
+        if isinstance(envelope, str) and envelope.strip().startswith('{'):
+            try:
+                envelope = ast.literal_eval(envelope)
+            except:
+                return messages
+        
+        if not isinstance(envelope, dict):
+            return messages
+            
+        # Direct message
+        if envelope.get("kind") == "message":
+            messages.append(envelope)
+            return messages
+            
+        # Task structure
+        if envelope.get("kind") == "task":
+            status = envelope.get("status", {})
+            msg = status.get("message")
+            if isinstance(msg, dict):
+                messages.append(msg)
+            # Also check history for additional messages
+            for h in envelope.get("history", []):
+                if isinstance(h, dict) and h.get("kind") == "message":
+                    messages.append(h)
+        
+        return messages
+
+    def _iter_dataparts(self, message: Dict[str, Any]) -> List[Any]:
+        """Extract all data from DataParts in a message."""
+        data_items = []
+        
+        for part in message.get("parts", []):
+            if isinstance(part, dict):
+                if part.get("kind") == "data":
+                    data = part.get("data")
+                    if data is not None:
+                        data_items.append(data)
+                # Recovery: try to parse JSON from TextPart
+                elif part.get("kind") == "text":
+                    text = part.get("text", "")
+                    if text.strip().startswith("{"):
+                        try:
+                            data_items.append(json.loads(text))
+                        except:
+                            pass
+        
+        return data_items
+
+    def _extract_all_data(self, envelope: Any) -> Dict[str, Any]:
+        """Extract and merge all data from all DataParts across all messages."""
+        merged_data = {}
+        all_matches = []
+        
+        for message in self._iter_messages(envelope):
+            for data in self._iter_dataparts(message):
+                if isinstance(data, dict):
+                    # Accumulate matches from all parts
+                    if "matches" in data and isinstance(data["matches"], list):
+                        all_matches.extend(data["matches"])
+                    # Merge other fields (last one wins for non-list fields)
+                    for key, value in data.items():
+                        if key == "matches":
+                            continue  # Handle separately
+                        merged_data[key] = value
+        
+        # Add accumulated matches
+        if all_matches:
+            merged_data["matches"] = all_matches
+            merged_data["total_matches"] = len(all_matches)
+        
+        return merged_data
+
     # --- Helper Methods ---
     def _build_message_with_data(self, data: Dict[str, Any]) -> Message:
         """Build A2A Message with DataPart for structured communication."""
-        return Message(
-            role="user",
-            parts=[DataPart(kind="data", data=data)],
-            messageId=f"orch-{time.time()}",
-            kind="message"
-        )
+        # Use message_utils helper for consistent Part creation
+        return create_agent_message(data, role="user")
     
     async def call_other_agent_message(self, agent_name: str, message: Message, timeout: float = 30.0) -> str:
         """
@@ -447,51 +551,36 @@ class SimpleOrchestratorAgent(A2AAgent):
         except:
             return message
 
-    def _extract_patterns(self, response: str) -> List[str]:
-        """Extract patterns from keyword agent response."""
-        import re
-        
+    def _extract_patterns(self, response: Any) -> List[str]:
+        """Extract patterns from keyword agent response (handles all parts)."""
         patterns = []
         source = "unknown"
         
-        # Try to parse as JSON first
-        try:
-            data = json.loads(response)
-            if isinstance(data, dict):
-                # Check for source tracking
-                source = data.get("source", "unknown")
-                
-                # First check for flat patterns list (new format)
-                if "patterns" in data and isinstance(data["patterns"], list):
-                    patterns = [p for p in data["patterns"] if isinstance(p, str)]
-                    self.logger.info(f"Using flat patterns list from {source}: {len(patterns)} patterns")
-                
-                # If no flat list, extract from categories (backwards compatibility)
-                if not patterns:
-                    # Include ALL pattern categories
-                    for category in ["section_patterns", "clinical_patterns", "medication_patterns", 
-                                   "temporal_patterns", "vital_patterns", "event_patterns", "term_patterns"]:
-                        if category in data:
-                            for p in data[category]:
-                                if isinstance(p, dict) and "pattern" in p:
-                                    patterns.append(p["pattern"])
-                                elif isinstance(p, str):
-                                    patterns.append(p)
-                    if patterns:
-                        self.logger.info(f"Extracted patterns from categories ({source}): {len(patterns)} patterns")
-                        
-            elif isinstance(data, list):
-                patterns = [p for p in data if isinstance(p, str)]
-                self.logger.info(f"Using direct pattern list: {len(patterns)} patterns")
-        except:
-            # Fallback to regex extraction from text
-            for line in response.splitlines():
-                if "`" in line and not line.strip().startswith("#"):
-                    patterns.extend(re.findall(r"`([^`]+)`", line))
-            if patterns:
-                self.logger.info(f"Extracted patterns from text: {len(patterns)} patterns")
+        # Extract all data from all parts
+        data = self._extract_all_data(response)
         
-        # Deduplicate while preserving order
+        if data:
+            source = data.get("source", "unknown")
+            
+            # Check for flat patterns list
+            if "patterns" in data and isinstance(data["patterns"], list):
+                patterns = [p for p in data["patterns"] if isinstance(p, str)]
+                self.logger.info(f"Using flat patterns list from {source}: {len(patterns)} patterns")
+            
+            # Extract from categories if no flat list
+            if not patterns:
+                for category in ["section_patterns", "clinical_patterns", "medication_patterns", 
+                               "temporal_patterns", "vital_patterns", "event_patterns", "term_patterns"]:
+                    if category in data:
+                        for p in data[category]:
+                            if isinstance(p, dict) and "pattern" in p:
+                                patterns.append(p["pattern"])
+                            elif isinstance(p, str):
+                                patterns.append(p)
+                if patterns:
+                    self.logger.info(f"Extracted patterns from categories ({source}): {len(patterns)} patterns")
+        
+        # Deduplicate
         seen = set()
         deduped = []
         for p in patterns:
@@ -504,7 +593,6 @@ class SimpleOrchestratorAgent(A2AAgent):
             deduped = self._get_fallback_patterns()
             source = "orchestrator_fallback"
         
-        # Log pattern source and samples
         self.logger.info(f"Pattern source: {source}")
         if deduped:
             self.logger.info(f"First 3 patterns: {deduped[:3]}")
@@ -531,27 +619,18 @@ class SimpleOrchestratorAgent(A2AAgent):
             r"(?i)lab\s+results",
         ]
 
-    def _parse_grep_results(self, response: str) -> List[Dict[str, Any]]:
-        """Parse grep agent response to extract matches."""
-        try:
-            data = json.loads(response)
-            if isinstance(data, dict) and "matches" in data:
-                return data["matches"]
-            if isinstance(data, list):
-                return data
-        except:
-            # Fallback: create basic matches from text
-            matches = []
-            for i, line in enumerate(response.splitlines()[:100], 1):
-                if line.strip():
-                    matches.append({
-                        "file_path": "document.txt",
-                        "line_number": i,
-                        "match_text": line[:200],
-                        "context_before": "",
-                        "context_after": ""
-                    })
+    def _parse_grep_results(self, response: Any) -> List[Dict[str, Any]]:
+        """Parse grep agent response to extract ALL matches from ALL parts."""
+        
+        # Extract and merge all data from all parts
+        data = self._extract_all_data(response)
+        
+        if data and "matches" in data:
+            matches = data.get("matches", [])
+            self.logger.info(f"Extracted {len(matches)} matches from grep response")
             return matches
+        
+        self.logger.warning("No matches found in grep response")
         return []
 
     def _deduplicate_matches(self, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

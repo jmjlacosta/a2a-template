@@ -213,8 +213,8 @@ async def generate_text(
             )
             
             # Run async - new_message needs to be a google.genai.types.Content object
-            # Create proper Content object as shown in the example
-            content = types.Content(role="user", parts=[types.Part(text=prompt)])
+            # ADK Runner expects parts to be a list of Part objects
+            content = types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
             
             logger.debug(f"Running with content: {content}")
             result = runner.run_async(

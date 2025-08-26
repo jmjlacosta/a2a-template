@@ -6,7 +6,7 @@ This is a pure algorithmic agent - no LLM needed for the core search functionali
 
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from a2a.types import AgentSkill
 from base import A2AAgent
@@ -69,11 +69,11 @@ class GrepAgent(A2AAgent):
         )
 
     # --- Core Processing ---
-    async def process_message(self, message: str) -> str:
+    async def process_message(self, message: str) -> Union[Dict[str, Any], str]:
         """
         Search document with regex patterns.
         Input: JSON with patterns, document_content, and optional case_sensitive flag
-        Output: JSON with matches array and search metadata
+        Output: Dict with matches array and search metadata (will be wrapped in DataPart)
         """
         try:
             # Parse input
@@ -86,18 +86,18 @@ class GrepAgent(A2AAgent):
             
             # Validate inputs
             if not patterns:
-                return json.dumps({
+                return {
                     "error": "No patterns provided",
                     "matches": [],
                     "total_matches": 0
-                })
+                }
             
             if not document:
-                return json.dumps({
+                return {
                     "error": "No document content provided",
                     "matches": [],
                     "total_matches": 0
-                })
+                }
             
             # Normalize patterns input
             if isinstance(patterns, str):
@@ -109,15 +109,15 @@ class GrepAgent(A2AAgent):
             # Perform search
             results = self._search_document(patterns, document, case_sensitive)
             
-            return json.dumps(results, indent=2)
+            return results  # Return dict for DataPart
             
         except Exception as e:
             logger.error(f"Search error: {e}")
-            return json.dumps({
+            return {
                 "error": str(e),
                 "matches": [],
                 "total_matches": 0
-            })
+            }
 
     def _parse_input(self, message: str) -> Dict[str, Any]:
         """Parse input message."""
@@ -161,7 +161,22 @@ class GrepAgent(A2AAgent):
         patterns_searched = 0
         
         # Split document into lines for line-based searching
+        # If no newlines, try to intelligently split on sentence boundaries
         lines = document.splitlines()
+        if len(lines) == 1 and len(document) > 500:
+            # Document is one long line - try to split on periods followed by space and capital
+            import re
+            # Split on periods followed by space, but preserve the period
+            sentences = re.split(r'(?<=\.)\s+(?=[A-Z])', document)
+            if len(sentences) > 1:
+                lines = sentences
+                logger.info(f"Document had no newlines, split into {len(lines)} sentences")
+            else:
+                # Last resort: split on any period followed by space
+                lines = re.split(r'(?<=\.)\s+', document)
+                if len(lines) == 1:
+                    # Still one line - leave as is
+                    logger.warning("Document is one continuous line without clear sentence breaks")
         
         # Create line index for faster context extraction
         line_index = {i: line for i, line in enumerate(lines)}
@@ -186,8 +201,10 @@ class GrepAgent(A2AAgent):
         # Sort matches by line number
         matches.sort(key=lambda x: x.get("line_number", 0))
         
-        # Build result
+        # Build result with type identifier
         result = {
+            "type": "grep.result.v1",  # Type identifier for explicit contract
+            "source": "grep",
             "matches": matches,
             "total_matches": len(matches),
             "patterns_searched": patterns_searched,
@@ -197,6 +214,13 @@ class GrepAgent(A2AAgent):
         
         if errors:
             result["errors"] = errors
+        
+        # Debug logging
+        logger.info(f"Grep search complete: {len(matches)} total matches from {patterns_searched} patterns across {len(lines)} lines")
+        if matches:
+            # Log sample of unique line numbers
+            unique_lines = set(m.get("line_number", 0) for m in matches[:20])
+            logger.debug(f"Sample of match line numbers: {sorted(unique_lines)[:10]}")
         
         return result
 

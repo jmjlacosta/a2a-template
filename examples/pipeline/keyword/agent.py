@@ -6,7 +6,7 @@ regex patterns for identifying key information.
 
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from a2a.types import AgentSkill
 from base import A2AAgent
@@ -63,11 +63,11 @@ class KeywordAgent(A2AAgent):
         )
 
     # --- Core Processing ---
-    async def process_message(self, message: str) -> str:
+    async def process_message(self, message: str) -> Union[Dict[str, Any], str]:
         """
         Generate regex patterns from document preview.
         Input can be plain text or JSON with document_preview and focus_areas.
-        Returns JSON with categorized patterns.
+        Returns dict with categorized patterns (will be wrapped in DataPart by framework).
         """
         try:
             # Parse input
@@ -81,13 +81,13 @@ class KeywordAgent(A2AAgent):
             # Ensure we have fallback patterns if needed
             patterns = self._ensure_minimum_patterns(patterns)
             
-            # Return as JSON
-            return json.dumps(patterns, indent=2)
+            # Return as dict (will become DataPart)
+            return patterns
             
         except Exception as e:
             logger.error(f"Error generating patterns: {e}")
-            # Return fallback patterns
-            return json.dumps(self._get_fallback_patterns_json())
+            # Return fallback patterns as dict
+            return self._get_fallback_patterns_json()
 
     async def _generate_patterns(self, preview: str, focus_areas: List[str]) -> Dict[str, Any]:
         """Generate patterns using structured LLM output."""
