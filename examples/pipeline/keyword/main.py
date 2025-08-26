@@ -59,7 +59,7 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("📋 Endpoints:")
     logger.info(f"   Agent Card: http://localhost:{port}/.well-known/agent-card.json")
-    logger.info(f"   A2A Sync:   http://localhost:{port}/a2a/v1/message/sync")
+    logger.info(f"   JSON-RPC:   POST http://localhost:{port}/ (method: \"message/send\")")
     logger.info(f"   Health:     http://localhost:{port}/health")
     logger.info("=" * 60)
     logger.info("🔬 Capabilities:")
@@ -90,10 +90,10 @@ if __name__ == "__main__":
         logger.info(f"✅ LLM Provider: {provider}")
     
     logger.info("=" * 60)
-    logger.info("Example usage:")
-    logger.info(f'  curl -X POST http://localhost:{port}/a2a/v1/message/sync \\')
+    logger.info("Example JSON-RPC usage:")
+    logger.info(f'  curl -X POST http://localhost:{port}/ \\')
     logger.info('    -H "Content-Type: application/json" \\')
-    logger.info('    -d \'{"message": {"role": "user", "parts": [{"kind": "data", "data": {"document_preview": "Patient has diabetes type 2"}}], "kind": "message"}}\'')
+    logger.info('    -d \'{"jsonrpc": "2.0", "method": "message/send", "params": {"message": {"role": "user", "parts": [{"kind": "data", "data": {"document_preview": "Patient has diabetes type 2"}}], "messageId": "test-123"}}, "id": 1}\'')
     logger.info("=" * 60)
     
     # Run the server

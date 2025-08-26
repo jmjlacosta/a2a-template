@@ -274,10 +274,10 @@ Return ONLY valid JSON matching the schema. No additional text."""
         return {
             # PRIORITY 1: Temporal patterns for timeline building
             "temporal_patterns": [
-                {"pattern": r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", "priority": "critical", "description": "Date MM/DD/YYYY"},
-                {"pattern": r"\b\d{4}-\d{2}-\d{2}\b", "priority": "critical", "description": "Date YYYY-MM-DD"},
-                {"pattern": r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b", "priority": "critical", "description": "Date with various separators"},
-                {"pattern": r"(?i)(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}", "priority": "critical", "description": "Date Month DD, YYYY"},
+                {"pattern": r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", "priority": "high", "description": "Date MM/DD/YYYY"},
+                {"pattern": r"\b\d{4}-\d{2}-\d{2}\b", "priority": "high", "description": "Date YYYY-MM-DD"},
+                {"pattern": r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b", "priority": "high", "description": "Date with various separators"},
+                {"pattern": r"(?i)(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}", "priority": "high", "description": "Date Month DD, YYYY"},
                 {"pattern": r"(?i)\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b", "priority": "high", "description": "Full month names"},
                 {"pattern": r"\b(?:19|20)\d{2}\b", "priority": "high", "description": "Year YYYY"},
                 {"pattern": r"(?i)in\s+(?:19|20)\d{2}", "priority": "high", "description": "In year"},
@@ -287,8 +287,8 @@ Return ONLY valid JSON matching the schema. No additional text."""
             ],
             # PRIORITY 2: Medical events that happen at specific times
             "event_patterns": [
-                {"pattern": r"(?i)(?:admitted|admission|discharged|discharge)", "priority": "critical", "description": "Admission/discharge events"},
-                {"pattern": r"(?i)(?:diagnosed|diagnosis\s+of|diagnosed\s+with)", "priority": "critical", "description": "Diagnosis events"},
+                {"pattern": r"(?i)(?:admitted|admission|discharged|discharge)", "priority": "high", "description": "Admission/discharge events"},
+                {"pattern": r"(?i)(?:diagnosed|diagnosis\s+of|diagnosed\s+with)", "priority": "high", "description": "Diagnosis events"},
                 {"pattern": r"(?i)(?:underwent|performed|completed|received|had)", "priority": "high", "description": "Procedure verbs"},
                 {"pattern": r"(?i)(?:started|initiated|begun|commenced)", "priority": "high", "description": "Treatment start"},
                 {"pattern": r"(?i)(?:stopped|discontinued|ended|completed)", "priority": "high", "description": "Treatment end"},
@@ -298,7 +298,7 @@ Return ONLY valid JSON matching the schema. No additional text."""
             ],
             # PRIORITY 3: Generic medication patterns (no specific drug names)
             "medication_patterns": [
-                {"pattern": r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|μg|g|ml|cc|units?|iu|tablets?|pills?|caps?)\b", "priority": "critical", "description": "Medication dosage with units"},
+                {"pattern": r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|μg|g|ml|cc|units?|iu|tablets?|pills?|caps?)\b", "priority": "high", "description": "Medication dosage with units"},
                 {"pattern": r"(?i)(?:once|twice|three\s+times|four\s+times)\s+(?:a\s+)?(?:day|daily|week|weekly|month|monthly)", "priority": "high", "description": "Frequency phrases"},
                 {"pattern": r"(?i)(?:q\.?\d+h|every\s+\d+\s+hours?)", "priority": "high", "description": "Hourly frequency"},
                 {"pattern": r"(?i)(?:q\.?d\.?|b\.?i\.?d\.?|t\.?i\.?d\.?|q\.?i\.?d\.?|prn)", "priority": "high", "description": "Medical frequency abbreviations"},
