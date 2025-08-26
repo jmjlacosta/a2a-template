@@ -53,11 +53,13 @@ class KeywordAgent(A2AAgent):
 
     def get_system_instruction(self) -> str:
         return (
-            "You are a medical document pattern generator specializing in creating "
-            "ripgrep-compatible regex patterns. Generate precise patterns that identify "
-            "clinical information including diagnoses, medications, procedures, vitals, "
-            "lab values, and temporal markers. Use (?i) for case-insensitive matching "
-            "where appropriate. Balance specificity to minimize false positives."
+            "You are a medical timeline extractor specializing in creating ripgrep-compatible "
+            "regex patterns. Your primary goal is to build patient timelines by finding ALL "
+            "dates and their associated medical events. Focus on: 1) Every date format "
+            "(MM/DD/YYYY, YYYY-MM-DD, Month DD YYYY, etc.), 2) Medical events (admissions, "
+            "diagnoses, procedures, medication changes), 3) Temporal relationships (before, "
+            "after, during, since). Generate patterns that capture the WHEN of medical events. "
+            "Use (?i) for case-insensitive matching. Prioritize temporal patterns above all else."
         )
 
     # --- Core Processing ---
@@ -187,33 +189,38 @@ class KeywordAgent(A2AAgent):
             return self._get_fallback_patterns_json()
 
     def _build_pattern_prompt(self, preview: str, focus_areas: List[str]) -> str:
-        """Build prompt for pattern generation."""
-        prompt = f"""Generate ripgrep-compatible regex patterns to search the FULL medical document.
+        """Build prompt for timeline-focused pattern generation."""
+        prompt = f"""Generate ripgrep-compatible regex patterns to BUILD A PATIENT TIMELINE from the FULL medical document.
 You are seeing only a preview of the first {len(preview)} characters.
 
 DOCUMENT PREVIEW:
 {preview}
 
+PRIMARY GOAL: Extract EVERY date and its associated medical events to build a complete patient timeline.
+
 REQUIREMENTS:
-1. Create patterns that will find relevant information throughout the ENTIRE document
-2. Use (?i) for case-insensitive matching where appropriate
-3. Include common medical abbreviations and variations
-4. Avoid overly broad patterns that cause false positives
-5. Escape special regex characters properly
-6. Test for both structured and narrative text formats
+1. Find ALL dates in ANY format (MM/DD/YYYY, YYYY-MM-DD, Month DD YYYY, etc.)
+2. Find events that happen AT dates (admitted on, diagnosed on, surgery on)
+3. Find temporal relationships (since 2020, before surgery, after discharge)
+4. Use (?i) for case-insensitive matching
+5. Capture medication changes with dates (started, stopped, changed dose)
+6. Find procedure dates and appointment dates
+7. Prioritize finding WHEN things happened over WHAT happened
 
 """
         
         if focus_areas:
-            prompt += f"FOCUS AREAS: {', '.join(focus_areas)}\n"
-            prompt += "Prioritize patterns related to these areas.\n\n"
+            prompt += f"TIMELINE FOCUS: {', '.join(focus_areas)}\n"
+            prompt += "Extract patterns that show WHEN these events occurred.\n\n"
         
-        prompt += """PATTERN CATEGORIES NEEDED:
-- Section headers (History, Assessment, Plan, etc.)
-- Clinical findings (diagnoses, symptoms, conditions)
-- Medications (drug names, dosages, frequencies)
-- Temporal markers (dates, durations, timing)
-- Vital signs (BP, HR, temp, weight, etc.)
+        prompt += """PATTERN CATEGORIES NEEDED (in priority order):
+- Temporal patterns (ALL date formats, years, months, relative times)
+- Event patterns (admitted, discharged, diagnosed, underwent, started, stopped)
+- Medication patterns (focus on changes: started, discontinued, dose changed)
+- Clinical patterns (with temporal context: diagnosed with X in/on DATE)
+- Vital patterns (timestamped vital signs)
+
+CRITICAL: Prioritize temporal patterns above everything else. We need dates!
 
 Return ONLY valid JSON matching the schema. No additional text."""
         
@@ -263,38 +270,55 @@ Return ONLY valid JSON matching the schema. No additional text."""
         return patterns
 
     def _get_fallback_patterns_json(self) -> Dict[str, List[Dict[str, str]]]:
-        """Get fallback patterns in structured format."""
+        """Get fallback patterns optimized for timeline extraction."""
         return {
-            "section_patterns": [
-                {"pattern": r"(?i)^\s*(history|hx)(?:\s+of)?(?:\s+present)?(?:\s+illness)?", "priority": "high", "description": "History section"},
-                {"pattern": r"(?i)^\s*(assessment|a&p|assessment\s+and\s+plan)", "priority": "high", "description": "Assessment section"},
-                {"pattern": r"(?i)^\s*(plan|treatment\s+plan|management)", "priority": "high", "description": "Plan section"},
-                {"pattern": r"(?i)^\s*(physical\s+exam(?:ination)?|pe|exam)", "priority": "medium", "description": "Physical exam section"},
-            ],
-            "clinical_patterns": [
-                {"pattern": r"(?i)diabetes(?:\s+mellitus)?(?:\s+type\s+[12])?", "priority": "high", "description": "Diabetes diagnosis"},
-                {"pattern": r"(?i)hypertension|htn|high\s+blood\s+pressure", "priority": "high", "description": "Hypertension"},
-                {"pattern": r"(?i)coronary\s+artery\s+disease|cad|mi|myocardial\s+infarction", "priority": "high", "description": "Heart disease"},
-                {"pattern": r"(?i)diagnosis(?:es)?[:]\s*", "priority": "high", "description": "Diagnosis marker"},
-                {"pattern": r"(?i)chief\s+complaint|cc|presenting\s+complaint", "priority": "medium", "description": "Chief complaint"},
-            ],
-            "medication_patterns": [
-                {"pattern": r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml|cc|units?|iu)\b", "priority": "high", "description": "Medication dosage"},
-                {"pattern": r"(?i)metformin|lisinopril|atorvastatin|aspirin|insulin", "priority": "high", "description": "Common medications"},
-                {"pattern": r"(?i)(?:medication|med|rx)s?\s*[:]\s*", "priority": "medium", "description": "Medication section marker"},
-                {"pattern": r"(?i)(?:q\.?d\.?|b\.?i\.?d\.?|t\.?i\.?d\.?|q\.?i\.?d\.?|prn|daily|twice|three\s+times)", "priority": "medium", "description": "Medication frequency"},
-            ],
+            # PRIORITY 1: Temporal patterns for timeline building
             "temporal_patterns": [
-                {"pattern": r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", "priority": "high", "description": "Date MM/DD/YYYY"},
-                {"pattern": r"\b\d{4}-\d{2}-\d{2}\b", "priority": "high", "description": "Date YYYY-MM-DD"},
+                {"pattern": r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", "priority": "critical", "description": "Date MM/DD/YYYY"},
+                {"pattern": r"\b\d{4}-\d{2}-\d{2}\b", "priority": "critical", "description": "Date YYYY-MM-DD"},
+                {"pattern": r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b", "priority": "critical", "description": "Date with various separators"},
+                {"pattern": r"(?i)(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}", "priority": "critical", "description": "Date Month DD, YYYY"},
+                {"pattern": r"(?i)\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b", "priority": "high", "description": "Full month names"},
+                {"pattern": r"\b(?:19|20)\d{2}\b", "priority": "high", "description": "Year YYYY"},
+                {"pattern": r"(?i)in\s+(?:19|20)\d{2}", "priority": "high", "description": "In year"},
                 {"pattern": r"(?i)(?:yesterday|today|tomorrow|last\s+(?:week|month|year))", "priority": "medium", "description": "Relative time"},
-                {"pattern": r"\b\d+\s*(?:day|week|month|year)s?\s+ago\b", "priority": "medium", "description": "Time duration"},
+                {"pattern": r"\b\d+\s*(?:day|week|month|year)s?\s+ago\b", "priority": "high", "description": "Time duration ago"},
+                {"pattern": r"(?i)(?:on|at|during|since|until|before|after|following)\s+", "priority": "high", "description": "Temporal prepositions"},
             ],
+            # PRIORITY 2: Medical events that happen at specific times
+            "event_patterns": [
+                {"pattern": r"(?i)(?:admitted|admission|discharged|discharge)", "priority": "critical", "description": "Admission/discharge events"},
+                {"pattern": r"(?i)(?:diagnosed|diagnosis\s+of|diagnosed\s+with)", "priority": "critical", "description": "Diagnosis events"},
+                {"pattern": r"(?i)(?:underwent|performed|completed|received|had)", "priority": "high", "description": "Procedure verbs"},
+                {"pattern": r"(?i)(?:started|initiated|begun|commenced)", "priority": "high", "description": "Treatment start"},
+                {"pattern": r"(?i)(?:stopped|discontinued|ended|completed)", "priority": "high", "description": "Treatment end"},
+                {"pattern": r"(?i)(?:presented|arrived|came\s+in|brought\s+in)", "priority": "high", "description": "Presentation events"},
+                {"pattern": r"(?i)(?:surgery|procedure|operation|biopsy|scan|imaging)", "priority": "high", "description": "Procedures"},
+                {"pattern": r"(?i)(?:emergency|urgent|routine|scheduled|elective)", "priority": "medium", "description": "Event urgency"},
+            ],
+            # PRIORITY 3: Generic medication patterns (no specific drug names)
+            "medication_patterns": [
+                {"pattern": r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|μg|g|ml|cc|units?|iu|tablets?|pills?|caps?)\b", "priority": "critical", "description": "Medication dosage with units"},
+                {"pattern": r"(?i)(?:once|twice|three\s+times|four\s+times)\s+(?:a\s+)?(?:day|daily|week|weekly|month|monthly)", "priority": "high", "description": "Frequency phrases"},
+                {"pattern": r"(?i)(?:q\.?\d+h|every\s+\d+\s+hours?)", "priority": "high", "description": "Hourly frequency"},
+                {"pattern": r"(?i)(?:q\.?d\.?|b\.?i\.?d\.?|t\.?i\.?d\.?|q\.?i\.?d\.?|prn)", "priority": "high", "description": "Medical frequency abbreviations"},
+                {"pattern": r"(?i)(?:daily|weekly|monthly|as\s+needed)", "priority": "high", "description": "Common frequencies"},
+                {"pattern": r"(?i)\b[A-Z][a-z]+(?:in|ol|ide|ate|ine|one|pril|artan|statin|zole|cycline|cillin|mycin|azole|pam|pine)\b", "priority": "medium", "description": "Drug name patterns by suffix"},
+                {"pattern": r"(?i)(?:medication|med|rx|drug|prescription)s?\s*[:]\s*", "priority": "medium", "description": "Medication section marker"},
+                {"pattern": r"(?i)(?:started|changed|increased|decreased|switched\s+to|adjusted)", "priority": "high", "description": "Medication changes"},
+            ],
+            # Clinical findings (de-prioritized but still useful)
+            "clinical_patterns": [
+                {"pattern": r"(?i)(?:chief\s+complaint|cc|presenting\s+complaint|reason\s+for\s+visit)", "priority": "high", "description": "Chief complaint"},
+                {"pattern": r"(?i)(?:history\s+of|h/o|hx\s+of|past\s+medical)", "priority": "medium", "description": "History markers"},
+                {"pattern": r"(?i)(?:diagnosis|diagnoses|dx|impression)[:]\s*", "priority": "high", "description": "Diagnosis section"},
+                {"pattern": r"(?i)(?:no\s+evidence\s+of|negative\s+for|denied|denies)", "priority": "medium", "description": "Negative findings"},
+            ],
+            # Vital signs (often timestamped)
             "vital_patterns": [
                 {"pattern": r"(?i)(?:blood\s+pressure|bp)[\s:]+\d{2,3}/\d{2,3}", "priority": "high", "description": "Blood pressure"},
                 {"pattern": r"(?i)(?:heart\s+rate|hr|pulse)[\s:]+\d{2,3}", "priority": "high", "description": "Heart rate"},
                 {"pattern": r"(?i)(?:temperature|temp)[\s:]+\d{2,3}(?:\.\d)?", "priority": "high", "description": "Temperature"},
-                {"pattern": r"(?i)(?:weight|wt)[\s:]+\d+(?:\.\d+)?\s*(?:kg|lbs?|pounds?)", "priority": "medium", "description": "Weight"},
-                {"pattern": r"(?i)(?:height|ht)[\s:]+\d+(?:'\d+\"|cm|inches?)", "priority": "medium", "description": "Height"},
+                {"pattern": r"(?i)(?:o2\s+sat|oxygen\s+saturation|spo2)[\s:]+\d{2,3}%?", "priority": "high", "description": "Oxygen saturation"},
             ]
         }

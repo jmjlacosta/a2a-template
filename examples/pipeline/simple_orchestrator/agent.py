@@ -101,7 +101,7 @@ class SimpleOrchestratorAgent(A2AAgent):
         
         try:
             # Extract message from context
-            message = self.extract_message_text(context)
+            message = self._extract_message_text(context)
             
             # Send initial working status
             await updater.update_status(
@@ -141,7 +141,7 @@ class SimpleOrchestratorAgent(A2AAgent):
                 TaskState.working,
                 new_agent_text_message("📄 STEP 3: Extracting text chunks...")
             )
-            chunks = await self._step_chunks(unique_matches[:self.MAX_MATCHES_FOR_CHUNKS], document)
+            chunks = await self._step_chunk(unique_matches[:self.MAX_MATCHES_FOR_CHUNKS], document)
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message(f"✓ Extracted {len(chunks)} text chunks")
@@ -232,7 +232,7 @@ class SimpleOrchestratorAgent(A2AAgent):
         
         keyword_msg = self._build_message_with_data({
             "document_preview": preview,
-            "focus_areas": ["diagnosis", "medications", "procedures", "vitals", "labs"]
+            "focus_areas": ["temporal_events", "dated_diagnoses", "medication_changes", "procedures_with_dates", "admission_discharge_dates"]
         })
         
         # Call keyword agent
@@ -395,6 +395,29 @@ class SimpleOrchestratorAgent(A2AAgent):
             
             text_payload = "\n".join(text_parts)
             return await self.call_other_agent(agent_name, text_payload, timeout)
+
+    def _extract_message_text(self, context: RequestContext) -> str:
+        """Extract message text from A2A RequestContext."""
+        if not context.message or not context.message.parts:
+            return ""
+        
+        texts = []
+        for part in context.message.parts:
+            # Handle discriminated union by kind
+            kind = getattr(part, "kind", None)
+            if kind == "text":
+                text = getattr(part, "text", None)
+                if text:
+                    texts.append(str(text))
+            elif kind == "data":
+                data = getattr(part, "data", None)
+                if data:
+                    if isinstance(data, (dict, list)):
+                        texts.append(json.dumps(data))
+                    else:
+                        texts.append(str(data))
+        
+        return "\n".join(texts) if texts else ""
 
     def _extract_document(self, message: str) -> str:
         """Extract document from message (might be JSON or plain text)."""
