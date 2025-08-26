@@ -164,11 +164,12 @@ class SimpleOrchestratorAgent(A2AAgent):
                 summary, patterns, unique_matches, chunks, elapsed
             )
             
-            # Send final result and complete
+            # Send final result as working status, then complete
             await updater.update_status(
-                TaskState.completed,
+                TaskState.working,
                 new_agent_text_message(final_text)
             )
+            await updater.complete()
             
         except Exception as e:
             self.logger.error(f"Pipeline error: {e}", exc_info=True)
