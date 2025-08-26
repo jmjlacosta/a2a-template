@@ -29,7 +29,7 @@ class SummarizeAgent(A2AAgent):
 
     # --------------- A2A metadata --------------- #
     def get_agent_name(self) -> str:
-        return "Document Summarizer"
+        return "CS Pipeline - Summarization"
 
     def get_agent_description(self) -> str:
         return (

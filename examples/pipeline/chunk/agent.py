@@ -28,7 +28,7 @@ class ChunkAgent(A2AAgent):
 
     # --- A2A Metadata ---
     def get_agent_name(self) -> str:
-        return "Text Chunk Extractor"
+        return "CS Pipeline - Chunker"
 
     def get_agent_description(self) -> str:
         return (

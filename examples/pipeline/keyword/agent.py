@@ -24,7 +24,7 @@ class KeywordAgent(A2AAgent):
 
     # --- A2A Metadata ---
     def get_agent_name(self) -> str:
-        return "Keyword Pattern Generator"
+        return "CS Pipeline - Keyword Generator"
 
     def get_agent_description(self) -> str:
         return (

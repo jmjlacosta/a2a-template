@@ -49,7 +49,7 @@ class SimpleOrchestratorAgent(A2AAgent):
 
     # --- A2A Metadata ---
     def get_agent_name(self) -> str:
-        return "Simple Pipeline Orchestrator"
+        return "Cancer Summarization - Simple Orchestrator"
 
     def get_agent_description(self) -> str:
         return (

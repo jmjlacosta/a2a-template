@@ -28,7 +28,7 @@ class GrepAgent(A2AAgent):
 
     # --- A2A Metadata ---
     def get_agent_name(self) -> str:
-        return "Pattern Search Agent"
+        return "CS Pipeline - Grep"
 
     def get_agent_description(self) -> str:
         return (
