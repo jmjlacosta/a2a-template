@@ -79,7 +79,7 @@ class SimpleOrchestratorAgent(A2AAgent):
         ]
 
     def supports_streaming(self) -> bool:
-        return False  # Disabled to prevent 403 errors with A2AStarletteApplication
+        return True  # Orchestrator implements execute() with streaming updates
 
     def get_system_instruction(self) -> str:
         return (
