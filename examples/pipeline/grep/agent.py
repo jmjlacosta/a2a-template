@@ -207,7 +207,7 @@ class GrepAgent(A2AAgent):
         
         try:
             # Compile regex with appropriate flags
-            flags = 0 if case_sensitive else re.IGNORECASE
+            flags = re.IGNORECASE | re.MULTILINE if not case_sensitive else re.MULTILINE
             regex = re.compile(pattern, flags)
             
             # Search through lines

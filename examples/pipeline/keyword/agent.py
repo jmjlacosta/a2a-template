@@ -89,7 +89,7 @@ class KeywordAgent(A2AAgent):
             # Return fallback patterns
             return json.dumps(self._get_fallback_patterns_json())
 
-    async def _generate_patterns(self, preview: str, focus_areas: List[str]) -> Dict[str, List[Dict[str, str]]]:
+    async def _generate_patterns(self, preview: str, focus_areas: List[str]) -> Dict[str, Any]:
         """Generate patterns using structured LLM output."""
         
         # Build focused prompt
@@ -182,11 +182,35 @@ class KeywordAgent(A2AAgent):
             # Validate and clean patterns
             result = self._validate_patterns(result)
             
+            # Add source tracking
+            result["source"] = "llm"
+            
+            # Also create a flat patterns list for easier consumption
+            flat_patterns = []
+            for category in result:
+                if category != "source" and isinstance(result[category], list):
+                    for p in result[category]:
+                        if isinstance(p, dict) and "pattern" in p:
+                            flat_patterns.append(p["pattern"])
+            result["patterns"] = flat_patterns
+            
             return result
             
         except Exception as e:
             logger.warning(f"LLM pattern generation failed: {e}, using enhanced fallbacks")
-            return self._get_fallback_patterns_json()
+            fallback = self._get_fallback_patterns_json()
+            fallback["source"] = "fallback"
+            
+            # Create flat patterns list
+            flat_patterns = []
+            for category in fallback:
+                if category != "source" and isinstance(fallback[category], list):
+                    for p in fallback[category]:
+                        if isinstance(p, dict) and "pattern" in p:
+                            flat_patterns.append(p["pattern"])
+            fallback["patterns"] = flat_patterns
+            
+            return fallback
 
     def _build_pattern_prompt(self, preview: str, focus_areas: List[str]) -> str:
         """Build prompt for timeline-focused pattern generation."""

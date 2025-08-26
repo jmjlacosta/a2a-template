@@ -16,6 +16,7 @@ from google.adk.runners import Runner
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.sessions import InMemorySessionService
 from google.adk.memory import InMemoryMemoryService
+from google.genai import types
 
 try:
     from google.adk.models.lite_llm import LiteLlm
@@ -119,16 +120,9 @@ def create_llm_agent(
     
     # Build provider-specific model handle
     if provider in ("anthropic", "openai") or detected_model.startswith(("anthropic/", "openai/")):
-        # LiteLLM wrapper — ensure defaults mirror generation_config
-        default_params = {}
-        if temperature is not None:
-            default_params["temperature"] = float(temperature)
-        if max_tokens is not None:
-            default_params["max_tokens"] = int(max_tokens)
-        
+        # LiteLLM wrapper - don't pass default_params as it causes issues
         model_obj = LiteLlm(
             model=detected_model,
-            default_params=default_params,
         )
     else:
         # Gemini native takes model string; LlmAgent will honor generation_config
@@ -210,31 +204,48 @@ async def generate_text(
             # Create runner with all required services
             runner = _create_runner("LLMUtilsAgent", agent)
             
-            # Run async - handle both stream and single result
-            result = runner.run_async(user_id="user", session_id="session", new_message=prompt)
+            # Create the session first
+            session_service = runner.session_service
+            await session_service.create_session(
+                user_id="user", 
+                session_id="session",
+                app_name="LLMUtilsAgent"
+            )
+            
+            # Run async - new_message needs to be a google.genai.types.Content object
+            # Create proper Content object as shown in the example
+            content = types.Content(role="user", parts=[types.Part(text=prompt)])
+            
+            logger.debug(f"Running with content: {content}")
+            result = runner.run_async(
+                user_id="user", 
+                session_id="session", 
+                new_message=content
+            )
+            logger.debug(f"Got result type: {type(result)}")
             
             chunks = []
             try:
-                # Check if result is an async iterator (stream) or single object
-                if hasattr(result, "__aiter__"):
-                    # It's a stream - collect all events
-                    async for ev in result:
-                        # ADK events typically have ev.text or ev.content.text
-                        if getattr(ev, "text", None):
-                            chunks.append(ev.text)
-                        else:
-                            content = getattr(ev, "content", None)
-                            if content and getattr(content, "text", None):
-                                chunks.append(content.text)
-                else:
-                    # It's a single result - await and extract text
-                    single_result = await result
-                    if hasattr(single_result, "text"):
-                        chunks.append(single_result.text)
-                    elif isinstance(single_result, str):
-                        chunks.append(single_result)
-                    else:
-                        chunks.append(str(single_result))
+                # Result is an async generator
+                async for response in result:
+                    # ADK Event objects have a content attribute with the LLM response
+                    if hasattr(response, "content"):
+                        content = response.content
+                        # The content might be a string directly
+                        if isinstance(content, str):
+                            chunks.append(content)
+                        # Or it might have a text attribute
+                        elif hasattr(content, "text"):
+                            chunks.append(content.text)
+                        # Or parts with text
+                        elif hasattr(content, "parts"):
+                            for part in content.parts:
+                                if hasattr(part, "text"):
+                                    chunks.append(part.text)
+                    elif hasattr(response, "text"):
+                        chunks.append(response.text)
+                    elif isinstance(response, str):
+                        chunks.append(response)
             finally:
                 # Clean up runner to avoid lingering background tasks with bounded timeout
                 if hasattr(runner, "shutdown"):

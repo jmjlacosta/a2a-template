@@ -77,7 +77,7 @@ class SimpleOrchestratorAgent(A2AAgent):
         ]
 
     def supports_streaming(self) -> bool:
-        return True  # Enable streaming for meta orchestrator
+        return False  # Disabled to prevent 403 errors with A2AStarletteApplication
 
     def get_system_instruction(self) -> str:
         return (
@@ -251,6 +251,23 @@ class SimpleOrchestratorAgent(A2AAgent):
 
     async def _step_grep(self, patterns: List[str], document: str) -> List[Dict[str, Any]]:
         """Step 2: Search document with patterns using grep agent."""
+        
+        # Debug logging
+        self.logger.info(f"Document preview (first 200 chars): {document[:200]!r}")
+        self.logger.info(f"Searching with {len(patterns)} patterns")
+        
+        # Quick self-test to see how many patterns would match
+        import re
+        test_matches = 0
+        for p in patterns[:10]:  # Test first 10 patterns
+            try:
+                if re.search(p, document, re.IGNORECASE):
+                    test_matches += 1
+                    self.logger.debug(f"Pattern '{p}' would match")
+            except Exception as e:
+                self.logger.debug(f"Pattern '{p}' is invalid: {e}")
+        self.logger.info(f"Self-test: {test_matches}/{min(10, len(patterns))} patterns would match")
+        
         grep_msg = self._build_message_with_data({
             "patterns": patterns,
             "document_content": document,
@@ -264,6 +281,7 @@ class SimpleOrchestratorAgent(A2AAgent):
                 timeout=self.CALL_TIMEOUT_SEC
             )
             matches = self._parse_grep_results(response)
+            self.logger.info(f"Grep returned {len(matches)} matches")
         except Exception as e:
             self.logger.error(f"Grep agent error: {e}")
             matches = []
@@ -434,26 +452,44 @@ class SimpleOrchestratorAgent(A2AAgent):
         import re
         
         patterns = []
+        source = "unknown"
         
         # Try to parse as JSON first
         try:
             data = json.loads(response)
             if isinstance(data, dict):
-                # Extract from different pattern categories
-                for category in ["section_patterns", "clinical_patterns", "term_patterns", "temporal_patterns"]:
-                    if category in data:
-                        for p in data[category]:
-                            if isinstance(p, dict) and "pattern" in p:
-                                patterns.append(p["pattern"])
-                            elif isinstance(p, str):
-                                patterns.append(p)
+                # Check for source tracking
+                source = data.get("source", "unknown")
+                
+                # First check for flat patterns list (new format)
+                if "patterns" in data and isinstance(data["patterns"], list):
+                    patterns = [p for p in data["patterns"] if isinstance(p, str)]
+                    self.logger.info(f"Using flat patterns list from {source}: {len(patterns)} patterns")
+                
+                # If no flat list, extract from categories (backwards compatibility)
+                if not patterns:
+                    # Include ALL pattern categories
+                    for category in ["section_patterns", "clinical_patterns", "medication_patterns", 
+                                   "temporal_patterns", "vital_patterns", "event_patterns", "term_patterns"]:
+                        if category in data:
+                            for p in data[category]:
+                                if isinstance(p, dict) and "pattern" in p:
+                                    patterns.append(p["pattern"])
+                                elif isinstance(p, str):
+                                    patterns.append(p)
+                    if patterns:
+                        self.logger.info(f"Extracted patterns from categories ({source}): {len(patterns)} patterns")
+                        
             elif isinstance(data, list):
                 patterns = [p for p in data if isinstance(p, str)]
+                self.logger.info(f"Using direct pattern list: {len(patterns)} patterns")
         except:
             # Fallback to regex extraction from text
             for line in response.splitlines():
                 if "`" in line and not line.strip().startswith("#"):
                     patterns.extend(re.findall(r"`([^`]+)`", line))
+            if patterns:
+                self.logger.info(f"Extracted patterns from text: {len(patterns)} patterns")
         
         # Deduplicate while preserving order
         seen = set()
@@ -463,7 +499,17 @@ class SimpleOrchestratorAgent(A2AAgent):
                 seen.add(p)
                 deduped.append(p)
         
-        return deduped if deduped else self._get_fallback_patterns()
+        if not deduped:
+            self.logger.warning("No patterns extracted, using fallbacks")
+            deduped = self._get_fallback_patterns()
+            source = "orchestrator_fallback"
+        
+        # Log pattern source and samples
+        self.logger.info(f"Pattern source: {source}")
+        if deduped:
+            self.logger.info(f"First 3 patterns: {deduped[:3]}")
+        
+        return deduped
 
     def _get_fallback_patterns(self) -> List[str]:
         """Get fallback patterns for medical documents."""
