@@ -10,7 +10,10 @@ import time
 import logging
 from typing import List, Dict, Any, Optional
 
-from a2a.types import AgentSkill, Message, DataPart, TextPart
+from a2a.types import AgentSkill, Message, DataPart, TextPart, TaskState
+from a2a.server.tasks import TaskUpdater
+from a2a.server.context import RequestContext, EventQueue
+from a2a.utils import new_agent_text_message
 from base import A2AAgent
 from utils.logging import get_logger
 
@@ -73,13 +76,106 @@ class SimpleOrchestratorAgent(A2AAgent):
         ]
 
     def supports_streaming(self) -> bool:
-        return False
+        return True  # Enable streaming for meta orchestrator
 
     def get_system_instruction(self) -> str:
         return (
             "You are a medical document analysis pipeline coordinator. "
             "Execute the fixed pipeline sequence and return structured results."
         )
+
+    # --- Streaming Execute for Meta Orchestrator ---
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """
+        Execute with streaming updates for meta orchestrator.
+        Emits incremental status updates between pipeline steps.
+        """
+        task = context.current_task
+        if not task:
+            # Fallback to parent execute if no task
+            await super().execute(context, event_queue)
+            return
+            
+        updater = TaskUpdater(event_queue, task.id, getattr(task, 'context_id', task.id))
+        
+        try:
+            # Extract message from context
+            message = self.extract_message_text(context)
+            
+            # Send initial working status
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("🚀 Starting cancer summarization pipeline...")
+            )
+            
+            # Parse input
+            t0 = time.time()
+            document = self._extract_document(message)
+            
+            # --- STEP 1: KEYWORDS ---
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("📝 STEP 1: Generating keyword patterns...")
+            )
+            patterns = await self._step_keywords(document)
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"✓ Generated {len(patterns)} keyword patterns")
+            )
+            
+            # --- STEP 2: GREP ---
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("🔍 STEP 2: Searching document with patterns...")
+            )
+            matches = await self._step_grep(patterns, document)
+            unique_matches = self._deduplicate_matches(matches)
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"✓ Found {len(unique_matches)} unique matches")
+            )
+            
+            # --- STEP 3: CHUNKS ---
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("📄 STEP 3: Extracting text chunks...")
+            )
+            chunks = await self._step_chunks(unique_matches[:self.MAX_MATCHES_FOR_CHUNKS], document)
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"✓ Extracted {len(chunks)} text chunks")
+            )
+            
+            # --- STEP 4: SUMMARIZE ---
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("📊 STEP 4: Generating summary...")
+            )
+            summary = await self._step_summarize(chunks, len(matches))
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("✓ Summary generation complete")
+            )
+            
+            # Format final response
+            elapsed = time.time() - t0
+            final_text = self._format_final_result(
+                summary, patterns, unique_matches, chunks, elapsed
+            )
+            
+            # Send final result and complete
+            await updater.update_status(
+                TaskState.completed,
+                new_agent_text_message(final_text)
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Pipeline error: {e}", exc_info=True)
+            await updater.update_status(
+                TaskState.failed,
+                new_agent_text_message(f"❌ Pipeline failed: {str(e)}")
+            )
+            raise
 
     # --- Core Pipeline Logic ---
     async def process_message(self, message: str) -> str:
