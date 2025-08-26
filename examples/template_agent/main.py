@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Simple Orchestrator Agent.
+Main entry point for the Template Agent.
 Starts an A2A-compliant HTTP server with all required endpoints.
 """
 
@@ -9,14 +9,14 @@ import sys
 from pathlib import Path
 
 # Add parent directories to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from utils.logging import get_logger, setup_logging
-from examples.pipeline.simple_orchestrator.agent import SimpleOrchestratorAgent
+from examples.template_agent.agent import TemplateAgent
 
 # Setup logging first
 setup_logging()
@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 def create_app():
     """Create the Starlette application with A2A endpoints."""
     # Instantiate the agent
-    agent = SimpleOrchestratorAgent()
+    agent = TemplateAgent()
     logger.info(f"Initializing {agent.get_agent_name()} v{agent.get_agent_version()}")
     
     # Build Agent Card + handler
@@ -49,7 +49,7 @@ app, agent = create_app()
 
 if __name__ == "__main__":
     # Configuration from environment
-    port = int(os.getenv("PORT", os.getenv("AGENT_PORT", "8008")))
+    port = int(os.getenv("PORT", "8010"))
     host = os.getenv("HOST", "0.0.0.0")
     reload = os.getenv("RELOAD", "false").lower() == "true"
     
@@ -62,22 +62,33 @@ if __name__ == "__main__":
     logger.info(f"   A2A Sync:   http://localhost:{port}/a2a/v1/message/sync")
     logger.info(f"   Health:     http://localhost:{port}/health")
     logger.info("=" * 60)
-    logger.info("🔗 Pipeline Agents:")
-    logger.info(f"   Keyword:   {agent.keyword_agent}")
-    logger.info(f"   Grep:      {agent.grep_agent}")
-    logger.info(f"   Chunk:     {agent.chunk_agent}")
-    logger.info(f"   Summarize: {agent.summarize_agent}")
-    logger.info("=" * 60)
-    logger.info("⚙️  Configuration:")
-    logger.info(f"   Max Patterns:     {agent.MAX_PATTERNS}")
-    logger.info(f"   Max Chunks:       {agent.MAX_MATCHES_FOR_CHUNKS}")
-    logger.info(f"   Context Lines:    {agent.LINES_BEFORE} before, {agent.LINES_AFTER} after")
-    logger.info(f"   Timeout:          {agent.CALL_TIMEOUT_SEC}s per agent call")
+    
+    # Check for LLM configuration
+    if not any([
+        os.getenv("ANTHROPIC_API_KEY"),
+        os.getenv("OPENAI_API_KEY"),
+        os.getenv("GOOGLE_API_KEY"),
+        os.getenv("GEMINI_API_KEY")
+    ]):
+        logger.warning("⚠️  No LLM API key detected!")
+        logger.warning("   Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY")
+        logger.warning("   The agent will not be able to generate responses without an API key.")
+    else:
+        # Show which provider is detected
+        provider = None
+        if os.getenv("ANTHROPIC_API_KEY"):
+            provider = "Anthropic Claude"
+        elif os.getenv("OPENAI_API_KEY"):
+            provider = "OpenAI GPT"
+        elif os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+            provider = "Google Gemini"
+        logger.info(f"✅ LLM Provider: {provider}")
+    
     logger.info("=" * 60)
     
     # Run the server
     uvicorn.run(
-        "examples.pipeline.simple_orchestrator.main:app" if reload else app,
+        "examples.template_agent.main:app" if reload else app,
         host=host,
         port=port,
         reload=reload,

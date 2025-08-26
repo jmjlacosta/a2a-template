@@ -1,501 +1,258 @@
 """
-A2A Agent Client for inter-agent communication.
-Simplified interface for calling other A2A-compliant agents.
+Enhanced A2A client with JSON-RPC support and production features.
+~210 LOC - Production-ready client with retry, auth, and debug logging.
+Uses JSON-RPC protocol to match A2AStarletteApplication server.
 """
 
-import asyncio
-import json
-import logging
 import os
-from typing import Dict, Any, Optional, AsyncIterator, List
-from datetime import datetime
-import httpx
+import json
+import time
+import random
+import logging
+import asyncio
+import aiohttp
+import itertools
+from typing import Dict, Any, Optional
+from contextlib import asynccontextmanager
 
-from a2a.types import (
-    AgentCard,
-    Task,
-    TaskState,
-    Message,
-    Part,
-    TextPart
-)
 
 logger = logging.getLogger(__name__)
 
+# Global counter for JSON-RPC request IDs
+_jsonrpc_id_counter = itertools.count(1)
 
-class A2AAgentClient:
+
+def _jsonrpc_envelope(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Simplified client for calling other A2A agents.
-    Handles agent card fetching, task lifecycle, and response processing.
+    Create a JSON-RPC 2.0 request envelope.
+    
+    Args:
+        method: The RPC method name (e.g., "message", "task.create")
+        params: The method parameters
+        
+    Returns:
+        JSON-RPC request dictionary
     """
+    return {
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": next(_jsonrpc_id_counter)
+    }
+
+
+class A2AClient:
+    """Enhanced A2A client with JSON-RPC and DataPart support."""
     
-    def __init__(
-        self,
-        timeout: float = 30.0,
-        cache_agent_cards: bool = True,
-        headers: Optional[Dict[str, str]] = None
-    ):
+    def __init__(self, base_url: str, token: Optional[str] = None):
         """
-        Initialize A2A agent client.
+        Initialize A2A client.
         
         Args:
-            timeout: Default timeout for agent calls
-            cache_agent_cards: Whether to cache fetched agent cards
-            headers: Additional headers for requests
+            base_url: Base URL for the A2A server (no /a2a/v1 suffix for JSON-RPC)
+            token: Optional bearer token for authentication
         """
-        self.timeout = timeout
-        self.cache_agent_cards = cache_agent_cards
-        self.agent_card_cache: Dict[str, AgentCard] = {}
-        self.headers = headers or {}
-        self.client = None
-    
-    async def __aenter__(self):
-        """Async context manager entry."""
-        self.client = httpx.AsyncClient(timeout=self.timeout)
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        if self.client:
-            await self.client.aclose()
-    
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
-        if not self.client:
-            self.client = httpx.AsyncClient(timeout=self.timeout)
-        return self.client
-    
-    async def fetch_agent_card(self, agent_url: str) -> AgentCard:
+        self.base_url = base_url.rstrip('/')
+        self.token = token or os.getenv("AGENT_TOKEN")
+        self.debug_payloads = os.getenv("DEBUG_PAYLOADS") == "1"
+        self.session = None
+        
+    @classmethod
+    def from_registry(cls, agent_name: str, token: Optional[str] = None):
         """
-        Fetch agent card from well-known endpoint.
+        Create client from registry.
         
         Args:
-            agent_url: Base URL of the agent
+            agent_name: Name of agent in registry
+            token: Optional bearer token
             
         Returns:
-            AgentCard object
+            A2AClient instance
+            
+        Raises:
+            ValueError: If agent not found in registry
         """
-        # Check cache first
-        if self.cache_agent_cards and agent_url in self.agent_card_cache:
-            logger.debug(f"Using cached agent card for {agent_url}")
-            return self.agent_card_cache[agent_url]
+        from .registry import resolve_agent_url
+        return cls(resolve_agent_url(agent_name), token)
         
-        # Try both possible well-known endpoints
-        # A2A spec is inconsistent - examples show agent-card.json (with hyphen)
-        # but spec text shows agentcard.json (no hyphen)
-        # HealthUniverse may use agent.json
-        possible_endpoints = [
-            f"{agent_url}/.well-known/agent-card.json",  # Most common, used in examples
-            f"{agent_url}/.well-known/agent.json",       # HealthUniverse might use this
-            f"{agent_url}/.well-known/agentcard.json"    # Spec section 5.3 says this
-        ]
-        
-        client = await self._get_client()
-        last_error = None
-        
-        for card_url in possible_endpoints:
-            try:
-                logger.info(f"Fetching agent card from {card_url}")
-                response = await client.get(card_url, headers=self.headers)
-                response.raise_for_status()
-                
-                card_data = response.json()
-                # Note: A2A spec requires camelCase in JSON (e.g., protocolVersion)
-                # but Python SDK converts to snake_case for attribute access
-                agent_card = AgentCard(**card_data)
-                
-                # Cache if enabled
-                if self.cache_agent_cards:
-                    self.agent_card_cache[agent_url] = agent_card
-                
-                logger.info(f"Fetched agent card: {agent_card.name} v{agent_card.version}")
-                return agent_card
-                
-            except Exception as e:
-                last_error = e
-                logger.debug(f"Failed to fetch from {card_url}: {e}")
-                continue
-        
-        # If we get here, all attempts failed
-        raise last_error or Exception(f"Failed to fetch agent card from {agent_url}")
-    
-    async def call_agent(
-        self,
-        agent_url: str,
-        message: str,
-        timeout: Optional[float] = None,
-        context_id: Optional[str] = None
-    ) -> str:
-        """
-        Call an agent with a text message and get text response.
-        
-        Args:
-            agent_url: URL of the agent to call
-            message: Text message to send
-            timeout: Optional timeout override
-            context_id: Optional context ID for conversation continuity
-            
-        Returns:
-            Agent's text response
-        """
-        import uuid
-        
-        # Fetch agent card
-        agent_card = await self.fetch_agent_card(agent_url)
-        
-        # Create A2A-compliant message structure
-        message_id = str(uuid.uuid4())
-        
-        # Build message according to A2A spec
-        msg_dict = {
-            "messageId": message_id,
-            "role": "user",
-            "parts": [
-                {
-                    "kind": "text",
-                    "text": message
-                }
-            ]
-        }
-        
-        # Add optional context_id if provided
-        if context_id:
-            msg_dict["contextId"] = context_id
-        
-        # Send JSON-RPC request following A2A spec
-        request = {
-            "jsonrpc": "2.0",
-            "method": "message/send",
-            "params": {
-                "message": msg_dict
-            },
-            "id": str(uuid.uuid4())
-        }
-        
-        logger.info(f"Calling agent {agent_card.name} with message")
-        logger.debug(f"📤 Sending JSON-RPC request: {json.dumps(request, indent=2)}")
-        
-        client = await self._get_client()
-        response = await client.post(
-            agent_url,
-            json=request,
-            headers={**self.headers, "Content-Type": "application/json"},
-            timeout=timeout or self.timeout
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Handle JSON-RPC response
-        if "error" in result:
-            error = result["error"]
-            # Use proper A2A error codes
-            error_code = error.get("code", -32603)
-            error_message = error.get("message", "Unknown error")
-            error_data = error.get("data")
-            
-            # Map to specific exceptions based on error code
-            if error_code == -32001:
-                raise ValueError(f"Task not found: {error_message}")
-            elif error_code == -32002:
-                raise ValueError(f"Task not cancelable: {error_message}")
-            elif error_code == -32003:
-                raise ValueError(f"Push notifications not supported: {error_message}")
-            elif error_code == -32004:
-                raise ValueError(f"Unsupported operation: {error_message}")
-            elif error_code == -32005:
-                raise ValueError(f"Content type not supported: {error_message}")
-            elif error_code == -32006:
-                raise ValueError(f"Invalid agent response: {error_message}")
-            elif error_code == -32007:
-                raise ValueError(f"No authenticated extended card: {error_message}")
-            else:
-                raise Exception(f"Agent error {error_code}: {error_message}")
-        
-        # Extract text from response
-        if "result" in result:
-            task_result = result["result"]
-            
-            # Check for artifacts (completed response)
-            if "artifacts" in task_result and task_result["artifacts"]:
-                artifact = task_result["artifacts"][0]
-                if "parts" in artifact and artifact["parts"]:
-                    part = artifact["parts"][0]
-                    if "text" in part:
-                        return part["text"]
-            
-            # Check for message in history
-            if "history" in task_result and task_result["history"]:
-                last_msg = task_result["history"][-1]
-                if "parts" in last_msg and last_msg["parts"]:
-                    part = last_msg["parts"][0]
-                    if "text" in part:
-                        return part["text"]
-            
-            # Check status for working state (may need polling)
-            if "status" in task_result:
-                status = task_result["status"]
-                if status.get("state") == "working":
-                    # For simplicity, return status message
-                    return "Agent is processing your request..."
-        
-        return "No response from agent"
-    
-    async def call_agent_json(
-        self,
-        agent_url: str,
-        data: Dict[str, Any],
-        timeout: Optional[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Call an agent with JSON data and get JSON response.
-        
-        Args:
-            agent_url: URL of the agent to call
-            data: JSON data to send
-            timeout: Optional timeout override
-            
-        Returns:
-            Agent's JSON response
-        """
-        # Convert dict to JSON string for sending
-        message = json.dumps(data)
-        
-        # Call agent
-        response = await self.call_agent(agent_url, message, timeout)
-        
-        # Try to parse response as JSON
+    @asynccontextmanager
+    async def _get_session(self):
+        """Get or create aiohttp session."""
+        if self.session is None:
+            headers = {"Content-Type": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            self.session = aiohttp.ClientSession(headers=headers)
         try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            # Return as dict with text key if not JSON
-            return {"response": response}
-    
-    async def stream_agent_response(
-        self,
-        agent_url: str,
-        message: str,
-        context_id: Optional[str] = None
-    ) -> AsyncIterator[str]:
-        """
-        Stream responses from an agent using SSE.
-        
-        Args:
-            agent_url: URL of the agent to call
-            message: Text message to send
-            context_id: Optional context ID
-            
-        Yields:
-            Response chunks as they arrive
-        """
-        import uuid
-        
-        # Fetch agent card
-        agent_card = await self.fetch_agent_card(agent_url)
-        
-        # Check if agent supports streaming
-        if not agent_card.capabilities or not agent_card.capabilities.streaming:
-            # Fall back to regular call
-            result = await self.call_agent(agent_url, message, context_id=context_id)
-            yield result
-            return
-        
-        # Create A2A-compliant message structure
-        message_id = str(uuid.uuid4())
-        
-        # Build message according to A2A spec
-        msg_dict = {
-            "messageId": message_id,
-            "role": "user",
-            "parts": [
-                {
-                    "kind": "text",
-                    "text": message
-                }
-            ]
-        }
-        
-        # Add optional context_id if provided
-        if context_id:
-            msg_dict["contextId"] = context_id
-        
-        # Send streaming request
-        request = {
-            "jsonrpc": "2.0",
-            "method": "message/stream",
-            "params": {
-                "message": msg_dict
-            },
-            "id": str(uuid.uuid4())
-        }
-        
-        logger.info(f"Streaming from agent {agent_card.name}")
-        
-        client = await self._get_client()
-        
-        # Use SSE streaming
-        async with client.stream(
-            "POST",
-            agent_url,
-            json=request,
-            headers={**self.headers, "Content-Type": "application/json"}
-        ) as response:
-            response.raise_for_status()
-            
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data = line[6:]  # Remove "data: " prefix
-                    try:
-                        event = json.loads(data)
-                        
-                        # Extract text from different event types
-                        if "result" in event:
-                            result = event["result"]
-                            
-                            # Check for artifact chunks
-                            if "artifact" in result:
-                                artifact = result["artifact"]
-                                if "parts" in artifact:
-                                    for part in artifact["parts"]:
-                                        if "text" in part:
-                                            yield part["text"]
-                            
-                            # Check for status updates
-                            if "status" in result:
-                                status = result["status"]
-                                if status.get("final"):
-                                    # Stream complete
-                                    break
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse SSE data: {data}")
-                        continue
+            yield self.session
+        finally:
+            pass
     
     async def close(self):
-        """Close the HTTP client."""
-        if self.client:
-            await self.client.aclose()
-            self.client = None
-
-
-class AgentRegistry:
-    """
-    Manage known agents from configuration.
-    Provides a registry of available agents and their endpoints.
+        """Close the session."""
+        if self.session:
+            await self.session.close()
+            self.session = None
     
-    IMPORTANT: In HealthUniverse deployment, each agent runs in its own Kubernetes container.
-    The agents.json file must be manually configured BEFORE deploying the orchestrator:
-    1. Deploy all required agents first
-    2. Note each agent's xxx-xxx-xxx code from HealthUniverse (e.g., vey-vou-nam)
-    3. Update config/agents.json with URLs: https://apps.healthuniverse.com/xxx-xxx-xxx
-    4. Commit and push to Git
-    5. Deploy the orchestrator
-    
-    Future versions will auto-populate this, but for now it's a manual process.
-    """
-    
-    def __init__(self, config_path: str = "config/agents.json"):
+    async def _request_jsonrpc(self, method: str, params: Dict[str, Any], 
+                               retries: int = 3, timeout_sec: Optional[float] = None) -> Any:
         """
-        Initialize agent registry.
+        Make JSON-RPC request with retries.
         
         Args:
-            config_path: Path to agents configuration file
-        """
-        self.config_path = config_path
-        self.agents = self._load_agents()
-    
-    def _load_agents(self) -> Dict[str, Dict[str, Any]]:
-        """Load agents from configuration file."""
-        if not os.path.exists(self.config_path):
-            logger.warning(f"Agent config not found at {self.config_path}")
-            return {}
-        
-        try:
-            with open(self.config_path, 'r') as f:
-                config = json.load(f)
-                return config.get("agents", {})
-        except Exception as e:
-            logger.error(f"Failed to load agent config: {e}")
-            return {}
-    
-    def get_agent_url(self, name: str) -> Optional[str]:
-        """
-        Get agent URL by name.
-        
-        Args:
-            name: Agent name
+            method: JSON-RPC method name
+            params: Method parameters
+            retries: Number of retry attempts
+            timeout_sec: Request timeout in seconds
             
         Returns:
-            Agent URL or None if not found
+            The result from the JSON-RPC response
+            
+        Raises:
+            aiohttp.ClientError: On network errors
+            ValueError: On JSON-RPC errors
         """
-        agent = self.agents.get(name, {})
-        return agent.get("url")
+        endpoint = self.base_url  # JSON-RPC posts to root
+        payload = _jsonrpc_envelope(method, params)
+        
+        if self.debug_payloads:
+            logger.debug(f"JSON-RPC Request to {endpoint}:")
+            logger.debug(json.dumps(payload, indent=2))
+        
+        for attempt in range(retries):
+            try:
+                async with self._get_session() as session:
+                    timeout = aiohttp.ClientTimeout(total=timeout_sec or 30.0)
+                    
+                    async with session.post(endpoint, json=payload, timeout=timeout) as response:
+                        response_text = await response.text()
+                        
+                        if self.debug_payloads:
+                            logger.debug(f"JSON-RPC Response ({response.status}):")
+                            logger.debug(response_text[:1000])
+                        
+                        if response.status >= 400:
+                            if attempt < retries - 1:
+                                await asyncio.sleep(2 ** attempt + random.random())
+                                continue
+                            raise aiohttp.ClientResponseError(
+                                request_info=response.request_info,
+                                history=response.history,
+                                status=response.status,
+                                message=f"JSON-RPC request failed: {response_text}"
+                            )
+                        
+                        # Parse JSON-RPC response
+                        try:
+                            data = json.loads(response_text)
+                        except json.JSONDecodeError:
+                            raise ValueError(f"Invalid JSON response: {response_text[:200]}")
+                        
+                        # Check for JSON-RPC error
+                        if "error" in data:
+                            error = data["error"]
+                            raise ValueError(f"JSON-RPC error {error.get('code')}: {error.get('message')}")
+                        
+                        # Return the result
+                        return data.get("result", data)
+                        
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt < retries - 1:
+                    logger.warning(f"Request failed (attempt {attempt + 1}/{retries}): {e}")
+                    await asyncio.sleep(2 ** attempt + random.random())
+                else:
+                    raise
     
-    def get_agent_info(self, name: str) -> Optional[Dict[str, Any]]:
+    async def send_message(self, message: Any, timeout_sec: Optional[float] = None) -> str:
         """
-        Get full agent information.
+        Send a message to the agent via JSON-RPC.
         
         Args:
-            name: Agent name
+            message: Message object or dict with role and parts
+            timeout_sec: Request timeout
             
         Returns:
-            Agent info dict or None
+            Text response from agent
         """
-        return self.agents.get(name)
-    
-    def list_agents(self) -> List[str]:
-        """
-        List all registered agent names.
+        # Convert message to dict if needed
+        if hasattr(message, 'model_dump'):
+            message_dict = message.model_dump()
+        elif hasattr(message, 'dict'):
+            message_dict = message.dict()
+        else:
+            message_dict = message
         
-        Returns:
-            List of agent names
-        """
-        return list(self.agents.keys())
-    
-    def add_agent(self, name: str, url: str, **kwargs):
-        """
-        Add or update an agent in the registry (IN MEMORY ONLY).
+        # Ensure message has required structure
+        if not isinstance(message_dict, dict):
+            message_dict = {
+                "role": "user",
+                "parts": [{"kind": "text", "text": str(message_dict)}],
+                "kind": "message"
+            }
+        elif "role" not in message_dict:
+            message_dict = {
+                "role": "user",
+                "parts": [{"kind": "text", "text": str(message_dict)}],
+                "kind": "message"
+            }
         
-        NOTE: This only updates the in-memory registry. In Kubernetes deployments,
-        changes will be lost when the container restarts. Update config/agents.json
-        in your Git repository and redeploy to make permanent changes.
+        # Add messageId if not present
+        if "messageId" not in message_dict:
+            import uuid
+            message_dict["messageId"] = str(uuid.uuid4())
         
-        Args:
-            name: Agent name
-            url: Agent URL
-            **kwargs: Additional agent properties
-        """
-        self.agents[name] = {
-            "url": url,
-            **kwargs
+        # Send via JSON-RPC with correct method name
+        params = {
+            "message": message_dict,
+            "metadata": {}
         }
-        logger.warning(f"Added agent '{name}' to in-memory registry only. "
-                      "Update config/agents.json and redeploy for permanent changes.")
-    
-    def remove_agent(self, name: str) -> bool:
-        """
-        Remove an agent from the registry (IN MEMORY ONLY).
         
-        NOTE: This only updates the in-memory registry. In Kubernetes deployments,
-        changes will be lost when the container restarts.
+        result = await self._request_jsonrpc("message/send", params, timeout_sec=timeout_sec)
         
-        Args:
-            name: Agent name
+        # Extract text from various response formats
+        if isinstance(result, str):
+            return result
+        
+        if isinstance(result, dict):
+            # Direct text field
+            if "text" in result:
+                return result["text"]
             
-        Returns:
-            True if removed, False if not found
-        """
-        if name in self.agents:
-            del self.agents[name]
-            logger.warning(f"Removed agent '{name}' from in-memory registry only. "
-                          "Update config/agents.json and redeploy for permanent changes.")
-            return True
-        return False
+            # Message with parts
+            msg = result.get("message") or result.get("result", {}).get("message")
+            if isinstance(msg, dict):
+                parts = msg.get("parts", [])
+                texts = []
+                for part in parts:
+                    if part.get("kind") == "text":
+                        texts.append(part.get("text", ""))
+                    elif part.get("kind") == "data":
+                        # Handle DataPart responses
+                        data = part.get("data", {})
+                        if isinstance(data, dict):
+                            texts.append(json.dumps(data, indent=2))
+                        else:
+                            texts.append(str(data))
+                return "\n".join(texts)
+        
+        return str(result)
+
+
+# Convenience function for backwards compatibility
+async def call_agent(agent_url: str, message: str, timeout: float = 30.0) -> str:
+    """
+    Call an agent with a simple text message.
     
-    def reload(self):
-        """
-        Reload the registry from the configuration file.
-        Useful if the config file was updated via ConfigMap in Kubernetes.
-        """
-        logger.info(f"Reloading agent registry from {self.config_path}")
-        self.agents = self._load_agents()
-        logger.info(f"Loaded {len(self.agents)} agents from configuration")
+    Args:
+        agent_url: Agent URL or name (resolved via registry)
+        message: Text message to send
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Agent's text response
+    """
+    client = A2AClient.from_registry(agent_url) if not agent_url.startswith("http") else A2AClient(agent_url)
+    try:
+        return await client.send_message(message, timeout_sec=timeout)
+    finally:
+        await client.close()

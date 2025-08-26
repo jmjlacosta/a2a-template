@@ -7,8 +7,10 @@ The A2A framework handles LLM integration, tools, streaming, and task management
 import os
 import json
 import logging
+import time
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
+from collections import defaultdict
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -28,8 +30,14 @@ from a2a.types import (
 )
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError, InvalidParamsError
+from utils.logging import get_logger
 
 logger = logging.getLogger(__name__)
+
+# Rate limiting for legacy warnings
+_legacy_warnings = defaultdict(lambda: {"count": 0, "last_warn": 0})
+_MAX_LEGACY_WARNINGS = 10  # Max warnings per type
+_LEGACY_WARN_INTERVAL = 60  # Seconds between warnings
 
 
 class A2AAgent(AgentExecutor, ABC):
@@ -53,21 +61,14 @@ class A2AAgent(AgentExecutor, ABC):
     """
     
     def __init__(self):
-        """Initialize the agent with logging."""
-        self._setup_logging()
+        """Initialize the agent with logging and optional startup checks."""
+        self.logger = get_logger(self.__class__.__name__)
         self._current_task_id = None
-    
-    def _setup_logging(self):
-        """Set up logging configuration."""
-        self.logger = logging.getLogger(self.__class__.__name__)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        
+        # Run startup checks if not disabled
+        if os.getenv("A2A_SKIP_STARTUP", "").lower() not in ("true", "1"):
+            from utils.startup import run_startup_checks
+            run_startup_checks(self)
     
     def create_agent_card(self) -> AgentCard:
         """
@@ -78,7 +79,8 @@ class A2AAgent(AgentExecutor, ABC):
             AgentCard with agent metadata and capabilities
         """
         # Get base URL from HU_APP_URL environment variable (HealthUniverse standard)
-        base_url = os.getenv("HU_APP_URL", os.getenv("A2A_BASE_URL", "https://your-agent.example.com/a2a/v1"))
+        # This should be the root URL - clients will append /a2a/v1/... themselves
+        base_url = os.getenv("HU_APP_URL", os.getenv("A2A_BASE_URL", "http://localhost:8000"))
         
         return AgentCard(
             # Required fields per spec
@@ -88,14 +90,14 @@ class A2AAgent(AgentExecutor, ABC):
             version=self.get_agent_version(),
             url=base_url,
             
-            # Transport configuration
+            # Transport configuration - using JSON-RPC with A2AStarletteApplication
             preferredTransport="JSONRPC",
             additionalInterfaces=[
                 {
                     "url": base_url,
                     "transport": "JSONRPC"
                 }
-                # Add more transports as supported (e.g., GRPC, HTTP+JSON)
+                # HTTP is not actually supported with A2AStarletteApplication
             ],
             
             # Provider information
@@ -107,7 +109,7 @@ class A2AAgent(AgentExecutor, ABC):
             # Capabilities
             capabilities=AgentCapabilities(
                 streaming=self.supports_streaming(),
-                pushNotifications=self.supports_push_notifications()
+                push_notifications=self.supports_push_notifications()
             ),
             
             # Skills (optional but recommended)
@@ -292,6 +294,41 @@ class A2AAgent(AgentExecutor, ABC):
             await event_queue.enqueue_event(failed_task)
             raise ServerError(error=e)
     
+    def _log_legacy_warning(self, legacy_type: str) -> None:
+        """
+        Log rate-limited warnings for legacy Part formats.
+        
+        Args:
+            legacy_type: Type of legacy format encountered
+        """
+        global _legacy_warnings
+        
+        warning_info = _legacy_warnings[legacy_type]
+        current_time = time.time()
+        
+        # Check if we should log this warning
+        should_warn = (
+            warning_info["count"] < _MAX_LEGACY_WARNINGS and
+            current_time - warning_info["last_warn"] > _LEGACY_WARN_INTERVAL
+        )
+        
+        if should_warn:
+            warning_info["count"] += 1
+            warning_info["last_warn"] = current_time
+            
+            structured_hint = {
+                "action": "migrate_to_kind_union",
+                "saw": legacy_type,
+                "count": warning_info["count"],
+                "max_warnings": _MAX_LEGACY_WARNINGS
+            }
+            
+            self.logger.warning(
+                f"Legacy Part format detected: {legacy_type} "
+                f"({warning_info['count']}/{_MAX_LEGACY_WARNINGS} warnings). "
+                f"Hint: {json.dumps(structured_hint)}"
+            )
+    
     def _extract_message(self, context: RequestContext) -> Optional[str]:
         """
         Extract message from A2A protocol format.
@@ -371,14 +408,16 @@ class A2AAgent(AgentExecutor, ABC):
                         
             else:
                 # Fallback for legacy/malformed parts
-                # Try common patterns but log a warning
+                # Try common patterns but log a rate-limited warning
                 handled = False
+                legacy_type = None
                 
                 # Check for root.text pattern (legacy)
                 if hasattr(part, 'root'):
                     if isinstance(part.root, TextPart):
                         extracted.append(part.root.text)
                         handled = True
+                        legacy_type = "root.text"
                     elif isinstance(part.root, DataPart):
                         data = part.root.data
                         if isinstance(data, (dict, list)):
@@ -386,11 +425,13 @@ class A2AAgent(AgentExecutor, ABC):
                         else:
                             extracted.append(str(data))
                         handled = True
+                        legacy_type = "root.data"
                 
                 # Direct text attribute (legacy)
                 elif hasattr(part, "text"):
                     extracted.append(str(part.text))
                     handled = True
+                    legacy_type = "direct.text"
                     
                 # Direct data attribute (legacy)
                 elif hasattr(part, "data"):
@@ -400,9 +441,12 @@ class A2AAgent(AgentExecutor, ABC):
                     else:
                         extracted.append(str(data))
                     handled = True
+                    legacy_type = "direct.data"
                 
-                if handled:
-                    self.logger.warning(f"Handled legacy part format without 'kind' field")
+                if handled and legacy_type:
+                    # Rate-limited warning only if enabled
+                    if os.getenv("A2A_WARN_LEGACY_PARTS", "true").lower() == "true":
+                        self._log_legacy_warning(legacy_type)
         
         if not extracted:
             return None
@@ -501,7 +545,7 @@ class A2AAgent(AgentExecutor, ABC):
         following the A2A protocol.
         
         Args:
-            agent_name_or_url: Agent name (from config) or direct URL
+            agent_name_or_url: Agent name (from registry) or direct URL
             message: Message to send to the other agent
             timeout: Request timeout in seconds
             
@@ -511,26 +555,48 @@ class A2AAgent(AgentExecutor, ABC):
         Raises:
             Exception: If agent communication fails
         """
-        from utils.a2a_client import A2AAgentClient
+        from utils.a2a_client import A2AClient
         
-        # Resolve agent URL from config if name provided
-        agent_url = agent_name_or_url
-        if not agent_name_or_url.startswith(('http://', 'https://')):
-            # Try to load from config
+        # Create client based on input type
+        if agent_name_or_url.startswith(('http://', 'https://')):
+            # Direct URL provided
+            client = A2AClient(agent_name_or_url)
+            self.logger.info(f"Calling agent at URL: {agent_name_or_url}")
+        else:
+            # Agent name provided - resolve from registry
             try:
-                with open('config/agents.json', 'r') as f:
-                    config = json.load(f)
-                    agents = config.get('agents', {})
-                    if agent_name_or_url in agents:
-                        agent_url = agents[agent_name_or_url]['url']
-                    else:
-                        raise ValueError(f"Agent '{agent_name_or_url}' not found in config")
-            except FileNotFoundError:
-                raise ValueError(f"Config file not found and '{agent_name_or_url}' is not a URL")
+                client = A2AClient.from_registry(agent_name_or_url)
+                self.logger.info(f"Calling agent '{agent_name_or_url}' from registry")
+            except ValueError as e:
+                raise ValueError(f"Failed to resolve agent '{agent_name_or_url}': {e}")
         
-        # Call the agent using A2A protocol
-        self.logger.info(f"Calling agent at {agent_url}")
-        
-        async with A2AAgentClient() as client:
-            response = await client.call_agent(agent_url, message, timeout=timeout)
-            return response
+        try:
+            # Call the agent with timeout propagation
+            result = await client.send_message(message, timeout_sec=timeout)
+            
+            # Normalize common response shapes to string
+            if isinstance(result, str):
+                return result
+            
+            if isinstance(result, dict):
+                # Check for direct text field (from tolerant parsing)
+                if "text" in result and isinstance(result["text"], str):
+                    return result["text"]
+                
+                # Check if response has a message field
+                msg = result.get("message")
+                if isinstance(msg, dict):
+                    parts = msg.get("parts") or []
+                    texts = [p.get("text", "") for p in parts if p.get("kind") == "text"]
+                    if texts:
+                        return "\n".join(texts)
+                
+                # Fallback to JSON representation
+                return json.dumps(result)
+            
+            # Final fallback
+            return str(result)
+            
+        finally:
+            # Clean up client connection
+            await client.close()

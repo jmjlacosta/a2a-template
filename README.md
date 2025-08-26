@@ -625,19 +625,51 @@ When implementing ANY new feature, verify:
 
 ## 🔧 Environment Variables
 
-```bash
-# LLM API Keys
-export GOOGLE_API_KEY="your-key"
-export OPENAI_API_KEY="your-key"
-export ANTHROPIC_API_KEY="your-key"
+### Minimal Setup - Just Set One API Key!
 
-# LLM Provider Configuration
-export LLM_PROVIDER="google"  # google|openai|anthropic
-export GEMINI_MODEL="gemini-2.0-flash-001"
-export OPENAI_MODEL="gpt-4o-mini"
-export ANTHROPIC_MODEL="claude-3-5-haiku-20241022"
+The utilities now auto-detect your LLM provider based on which API key is set. No other configuration needed:
+
+```bash
+# Option 1: Use Anthropic Claude (auto-selects claude-3-5-sonnet)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Option 2: Use OpenAI GPT (auto-selects gpt-4o-mini)  
+export OPENAI_API_KEY="sk-..."
+
+# Option 3: Use Google Gemini (auto-selects gemini-2.0-flash-exp)
+export GOOGLE_API_KEY="..."
+# OR
+export GEMINI_API_KEY="..."
+```
+
+That's it! The agent will automatically:
+- Detect which provider to use
+- Select the appropriate default model
+- Configure all settings correctly
+
+### Optional Configuration
+
+```bash
+# Override default models (optional)
+export ANTHROPIC_MODEL="anthropic/claude-3-5-sonnet-20241022"
+export OPENAI_MODEL="openai/gpt-4o-mini"
+export GOOGLE_MODEL="gemini-2.0-flash-exp"
 
 # Agent Configuration
+export HU_APP_URL="https://your-agent-url"          # Root URL (clients append /a2a/v1)
+export PORT="8000"                                  # Server port
+export LOG_LEVEL="INFO"                             # Logging level
+
+# Debugging
+export DEBUG_PAYLOADS="1"                           # Log request/response payloads
+
+# Authentication
+export AGENT_TOKEN="your-bearer-token"              # For inter-agent auth
+
+# Agent Registry
+export AGENT_REGISTRY_PATH="config/agents.json"     # Agent registry location
+
+# Agent Metadata (optional)
 export AGENT_NAME="My Agent"
 export AGENT_VERSION="1.0.0"
 export AGENT_ORG="My Organization"

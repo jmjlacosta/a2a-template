@@ -384,8 +384,24 @@ app = A2AStarletteApplication(
 ```
 
 2. **Agent Discovery**:
-- Agent card available at `/.well-known/agent-card.json`
-- Also available at `/.well-known/agent.json` (HealthUniverse compatible)
+The agent card is automatically served at these well-known URLs for discovery:
+- `/.well-known/agentcard.json` (A2A standard)
+- `/.well-known/agent-card.json` (alternate)
+- `/.well-known/agent.json` (HealthUniverse compatible)
+
+To add these routes manually in your main.py (if not using the template):
+```python
+from fastapi.responses import JSONResponse
+
+# After creating your app
+card_payload = agent_card.model_dump() if hasattr(agent_card, "model_dump") else agent_card.dict()
+
+@app.get("/.well-known/agentcard.json")
+@app.get("/.well-known/agent-card.json")
+@app.get("/.well-known/agent.json")
+async def serve_agent_card():
+    return JSONResponse(content=card_payload)
+```
 
 3. **Environment Variables**:
 ```bash

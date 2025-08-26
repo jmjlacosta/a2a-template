@@ -1,74 +1,19 @@
 {
   "agents": {
-    "grep": {
-      "url": "https://apps.healthuniverse.com/cft-uez-ier",
-      "name": "Pattern Search Agent",
-      "description": "Searches documents for medical patterns using regex"
-    },
     "keyword": {
-      "url": "https://apps.healthuniverse.com/ouh-pct-lig",
-      "name": "Pattern Generator",
-      "description": "Generates search patterns from document previews"
+      "url": "http://localhost:8101"
+    },
+    "grep": {
+      "url": "http://localhost:8102"
     },
     "chunk": {
-      "url": "https://apps.healthuniverse.com/eib-cjb-myu",
-      "name": "Context Extractor",
-      "description": "Extracts meaningful text chunks from documents"
+      "url": "http://localhost:8103"
     },
     "summarize": {
-      "url": "https://apps.healthuniverse.com/aqp-hlp-lmc",
-      "name": "Medical Summarizer",
-      "description": "Analyzes and summarizes medical text"
+      "url": "http://localhost:8104"
     },
-    "temporal_tagging": {
-      "url": "http://localhost:8010",
-      "name": "Temporal Tagging Agent",
-      "description": "Extracts temporal information from medical documents"
-    },
-    "encounter_grouping": {
-      "url": "http://localhost:8011",
-      "name": "Encounter Grouping Agent",
-      "description": "Groups clinical content by encounter dates"
-    },
-    "reconciliation": {
-      "url": "http://localhost:8012",
-      "name": "Reconciliation Agent",
-      "description": "Reconciles conflicting temporal information"
-    },
-    "summary_extractor": {
-      "url": "http://localhost:8013",
-      "name": "Summary Extractor Agent",
-      "description": "Extracts structured summaries from medical text"
-    },
-    "timeline_builder": {
-      "url": "http://localhost:8014",
-      "name": "Timeline Builder Agent",
-      "description": "Builds chronological timelines of medical events"
-    },
-    "checker": {
-      "url": "http://localhost:8015",
-      "name": "Checker Agent",
-      "description": "Verifies accuracy and consistency of medical information"
-    },
-    "unified_extractor": {
-      "url": "http://localhost:8016",
-      "name": "Unified Extractor Agent",
-      "description": "Performs comprehensive extraction of medical entities"
-    },
-    "unified_verifier": {
-      "url": "http://localhost:8017",
-      "name": "Unified Verifier Agent",
-      "description": "Performs final verification of all extracted information"
-    },
-    "narrative_synthesis": {
-      "url": "http://localhost:8018",
-      "name": "Narrative Synthesis Agent",
-      "description": "Synthesizes information into coherent medical narrative"
-    },
-    "cancer_summarization": {
-      "url": "http://localhost:8009",
-      "name": "Cancer Summarization Pipeline",
-      "description": "Fixed-sequence orchestrator for comprehensive cancer document analysis"
+    "orchestrator": {
+      "url": "http://localhost:8008"
     }
   }
 }
