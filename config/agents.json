@@ -1,8 +1,5 @@
 {
   "agents": {
-    "orchestrator": {
-      "url": "http://localhost:8008"
-    },
     "keyword": {
       "url": "http://localhost:8101"
     },
@@ -14,6 +11,9 @@
     },
     "summarize": {
       "url": "http://localhost:8104"
+    },
+    "orchestrator": {
+      "url": "http://localhost:8008"
     }
   }
 }

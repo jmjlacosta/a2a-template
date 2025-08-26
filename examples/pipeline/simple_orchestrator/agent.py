@@ -11,8 +11,9 @@ import logging
 from typing import List, Dict, Any, Optional
 
 from a2a.types import AgentSkill, Message, DataPart, TextPart, TaskState
+from a2a.server.agent_execution import RequestContext
+from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.server.context import RequestContext, EventQueue
 from a2a.utils import new_agent_text_message
 from base import A2AAgent
 from utils.logging import get_logger
