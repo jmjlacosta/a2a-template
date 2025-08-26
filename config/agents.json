@@ -1,19 +1,19 @@
 {
   "agents": {
+    "orchestrator": {
+      "url": "https://apps.healthuniverse.com/omj-cuu-rdv"
+    },
     "keyword": {
-      "url": "http://localhost:8101"
+      "url": "https://apps.healthuniverse.com/uad-nmu-ifv"
     },
     "grep": {
-      "url": "http://localhost:8102"
+      "url": "https://apps.healthuniverse.com/tfi-zlr-ygy"
     },
     "chunk": {
-      "url": "http://localhost:8103"
+      "url": "https://apps.healthuniverse.com/mgd-hyk-cbr"
     },
     "summarize": {
-      "url": "http://localhost:8104"
-    },
-    "orchestrator": {
-      "url": "http://localhost:8008"
+      "url": "https://apps.healthuniverse.com/ehc-xve-thr"
     }
   }
 }
