@@ -12,9 +12,10 @@ A step-by-step guide for creating A2A-compliant agents using this template.
 
 ## Overview
 
-This template provides a simplified base class (`A2AAgent`) that handles all the complex A2A protocol requirements, letting you focus on your agent's business logic. Agents can be:
+This template provides a simplified base class (`A2AAgent`) that handles all the complex A2A protocol requirements, letting you focus on your agent's business logic. The template is fully compliant with the A2A (Agent-to-Agent) protocol specification and includes utilities for proper message handling.
 
-- **Simple agents** - Just process messages and return responses
+Agent types:
+- **Simple agents** - Process messages and return responses (text or structured data)
 - **Tool-based agents** - Use LLM with function tools for complex operations
 - **Orchestrator agents** - Coordinate multiple agents to complete tasks
 
@@ -29,10 +30,18 @@ pip install -r requirements.txt
 You need at least one LLM provider API key:
 ```bash
 # Choose one:
-export GOOGLE_API_KEY="your-gemini-api-key"      # Preferred
+export GOOGLE_API_KEY="your-gemini-api-key"      # Preferred for Google ADK
 export OPENAI_API_KEY="your-openai-api-key"      # Alternative
 export ANTHROPIC_API_KEY="your-claude-api-key"   # Alternative
 ```
+
+### 3. Understanding Part Types (Critical for A2A)
+The A2A protocol uses discriminated union types for message parts:
+- **TextPart** (`kind: "text"`) - For human-readable strings
+- **DataPart** (`kind: "data"`) - For structured data (JSON-serializable)
+- **FilePart** (`kind: "file"`) - For file references
+
+⚠️ **Important**: Always use the correct Part type. Using TextPart for JSON data will cause parsing issues!
 
 ## Creating Your First Agent
 
@@ -68,10 +77,16 @@ class MySimpleAgent(A2AAgent):
     def get_agent_description(self) -> str:
         return "Detailed description of what your agent does"
     
-    async def process_message(self, message: str) -> str:
-        """Process the message and return a response."""
+    async def process_message(self, message: str) -> Union[str, Dict, List]:
+        """Process the message and return a response.
+        Returns:
+        - str: Will be wrapped in TextPart
+        - dict/list: Will be wrapped in DataPart (for structured data)
+        """
         # Your logic here
-        return f"Processed: {message}"
+        return f"Processed: {message}"  # TextPart
+        # OR for structured data:
+        # return {"result": "data", "count": 42}  # DataPart
 
 
 # Module-level app creation (required for deployment)
@@ -182,6 +197,57 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"🚀 Starting {agent.get_agent_name()}")
     uvicorn.run(app, host="0.0.0.0", port=port)
+```
+
+## Message Handling Best Practices
+
+### Using Message Utils (Recommended)
+The template includes `utils/message_utils.py` for proper Part creation:
+
+```python
+from utils.message_utils import (
+    create_text_part,      # Create TextPart
+    create_data_part,      # Create DataPart  
+    create_agent_message,  # Create full Message with Parts
+    new_agent_text_message # Shorthand for text messages
+)
+
+# Examples:
+text_part = create_text_part("Hello, world!")  
+data_part = create_data_part({"key": "value"})
+
+# Create a message with structured data
+message = create_agent_message(
+    {"patterns": ["pattern1", "pattern2"], "data": "value"},
+    role="agent"
+)
+```
+
+### DataPart vs TextPart Rules
+1. **Use DataPart for**:
+   - JSON objects/arrays
+   - Structured responses
+   - Inter-agent data transfer
+   - API responses
+
+2. **Use TextPart for**:
+   - Human-readable messages
+   - Markdown content
+   - Error messages
+   - Status updates
+
+### Returning Structured Data
+```python
+async def process_message(self, message: str) -> Union[str, Dict, List]:
+    # Return dict/list for DataPart (automatic)
+    return {
+        "matches": ["item1", "item2"],
+        "count": 2,
+        "metadata": {"source": "agent"}
+    }
+    
+    # Return string for TextPart (automatic)
+    # return "This is a text response"
 ```
 
 ## Migration Guide: Converting Existing Code
@@ -328,6 +394,69 @@ if __name__ == "__main__":
 - Agent metadata
 - Business logic
 
+## Multi-Part Message Handling
+
+### Problem: Agents Only Processing First Part
+A common issue is agents only reading `parts[0]`, missing data in subsequent parts.
+
+### Solution: Iterate All Parts
+```python
+def extract_all_data(message: Dict) -> Dict[str, Any]:
+    """Extract and merge data from ALL parts."""
+    merged_data = {}
+    
+    for part in message.get("parts", []):
+        if part.get("kind") == "data":
+            data = part.get("data")
+            if isinstance(data, dict):
+                merged_data.update(data)
+        elif part.get("kind") == "text":
+            # Handle text parts
+            text = part.get("text", "")
+            # Process text...
+    
+    return merged_data
+```
+
+### Orchestrator Pattern for Multi-Part
+See `examples/pipeline/simple_orchestrator/agent.py` for complete implementation:
+```python
+def _iter_messages(self, envelope: Any) -> List[Dict[str, Any]]:
+    """Extract all messages from Task/Message structures."""
+    # Implementation handles both Task and Message envelopes
+    
+def _iter_dataparts(self, message: Dict) -> List[Any]:
+    """Extract all DataParts from a message."""
+    # Iterates ALL parts, not just parts[0]
+```
+
+## LLM Integration Updates
+
+### Critical Fix: Content Object Creation
+**Wrong** (causes error):
+```python
+content = types.Content(role="user", parts=[types.Part(text=prompt)])
+```
+
+**Correct**:
+```python
+from google.genai import types
+content = types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
+```
+
+This fix is implemented in `utils/llm_utils.py:217`.
+
+### Using LLM Utils
+```python
+from utils.llm_utils import generate_completion
+
+# Automatic provider selection based on available API keys
+result = await generate_completion(
+    prompt="Your prompt here",
+    system_prompt="Optional system instructions"
+)
+```
+
 ## Testing Your Agent
 
 ### Universal Test Suite
@@ -415,14 +544,40 @@ HU_APP_URL=https://apps.healthuniverse.com/xxx-xxx-xxx
 
 ### For Inter-Agent Communication
 
-Agents can call each other:
-
+#### Text-Based Communication
 ```python
-# In your agent's process_message or system instruction:
+# Simple text message
 response = await self.call_other_agent(
     "agent-name",  # From config/agents.json
     "Message to send"
 )
+```
+
+#### Structured Data Communication (Recommended)
+```python
+from utils.message_utils import create_agent_message
+
+# Create structured message with DataPart
+message = create_agent_message({
+    "patterns": ["pattern1", "pattern2"],
+    "document": "content",
+    "metadata": {"source": "orchestrator"}
+}, role="user")
+
+# Send using A2A client
+from utils.a2a_client import A2AClient
+client = A2AClient.from_registry("agent-name")
+response = await client.send_message(message, timeout_sec=30)
+await client.close()
+```
+
+#### Using A2A Client for Structured Data
+```python
+# Send structured data directly
+response = await client.send_data({
+    "key": "value",
+    "nested": {"data": "here"}
+}, timeout_sec=30)
 ```
 
 Configure known agents in `config/agents.json`:
@@ -467,15 +622,21 @@ tools/
 
 ### 4. Error Handling
 - The base handles A2A protocol errors
-- Focus on your business logic errors
+- Focus on your business logic errors  
 - Return helpful error messages
 - Log appropriately
+- For structured errors, return dict with "error" field:
+  ```python
+  return {"error": "Invalid input", "details": "..."}
+  ```
 
 ### 5. Testing
 - Always run the universal tester
 - Test with actual LLM calls
 - Verify agent card generation
 - Test tool execution paths
+- Verify Part type handling (DataPart vs TextPart)
+- Test multi-part message scenarios
 
 ## Common Patterns
 
@@ -502,6 +663,85 @@ def analyze_data(data: str, criteria: List[str]) -> str:
     # Analysis logic
     return analysis_results
 ```
+
+## Streaming Support
+
+### Enabling Streaming
+```python
+def supports_streaming(self) -> bool:
+    return True  # Enable streaming support
+```
+
+### Implementing Streaming Execute
+```python
+async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    """Execute with streaming updates."""
+    task = context.current_task
+    if not task:
+        await super().execute(context, event_queue)
+        return
+        
+    updater = TaskUpdater(event_queue, task.id, task.context_id)
+    
+    try:
+        # Send status updates during processing
+        await updater.update_status(
+            TaskState.working,
+            new_agent_text_message("Starting processing...")
+        )
+        
+        # Do work...
+        result = await self.process_work()
+        
+        # Send final result
+        await updater.update_status(
+            TaskState.working,
+            create_agent_message(result)  # Can be text or data
+        )
+        await updater.complete()
+        
+    except Exception as e:
+        await updater.update_status(
+            TaskState.failed,
+            new_agent_text_message(f"Error: {str(e)}")
+        )
+        raise
+```
+
+## Production Deployment Best Practices
+
+### 1. Configuration Management
+- Keep `config/agents.json` with localhost URLs for development
+- Use environment variables for production URLs:
+  ```python
+  agent_url = os.getenv("KEYWORD_AGENT_URL", "http://localhost:8101")
+  ```
+
+### 2. Debugging Inter-Agent Communication
+- Log message types and content:
+  ```python
+  logger.info(f"Sending {type(message)} to {agent_name}")
+  ```
+- Save debug output for analysis:
+  ```python
+  with open(f"/tmp/debug_{timestamp}.json", "w") as f:
+      json.dump(response, f, indent=2)
+  ```
+
+### 3. Handling Large Documents
+- For single-line documents, implement intelligent splitting:
+  ```python
+  if len(lines) == 1 and len(document) > 500:
+      # Split on sentence boundaries
+      sentences = re.split(r'(?<=\.)\s+(?=[A-Z])', document)
+  ```
+
+### 4. Memory Management
+- Limit matches/results to prevent OOM:
+  ```python
+  MAX_MATCHES_PER_PATTERN = 100
+  MAX_TOTAL_MATCHES = 1000
+  ```
 
 ## Advanced Topics
 
@@ -583,6 +823,29 @@ Two orchestration approaches:
    - Predictable behavior
    - Better for well-defined workflows
 
+## Common Issues and Solutions
+
+### Issue: "Orchestrator only receiving 1 match when grep finds 8"
+**Cause**: Only reading `parts[0]` instead of all parts
+**Solution**: Iterate all parts in the message:
+```python
+for part in message.get("parts", []):
+    if part.get("kind") == "data":
+        # Process ALL data parts
+```
+
+### Issue: "Input should be a valid dictionary" (LLM error)
+**Cause**: Incorrect Content object creation in llm_utils
+**Solution**: Use `types.Part.from_text(text=prompt)` not `types.Part(text=prompt)`
+
+### Issue: "Agent does not support streaming"
+**Cause**: `supports_streaming()` returns False
+**Solution**: Return True and implement `execute()` method with TaskUpdater
+
+### Issue: "No keywords detected" despite generation
+**Cause**: Using TextPart for JSON data instead of DataPart
+**Solution**: Return dict/list from `process_message()` for automatic DataPart wrapping
+
 ## Troubleshooting
 
 ### Issue: "No LLM API key found"
@@ -629,4 +892,57 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 ---
 
-Remember: The base handles all A2A complexity. Focus on your agent's unique functionality!
+## Quick Reference
+
+### Part Type Decision Tree
+```
+Is the data structured (dict/list)?
+├─ Yes → DataPart (return dict/list)
+└─ No → Is it for human reading?
+    ├─ Yes → TextPart (return string)
+    └─ No → DataPart (structure it)
+```
+
+### Message Utils Cheat Sheet
+```python
+from utils.message_utils import *
+
+# Text message
+msg = new_agent_text_message("Hello")
+
+# Data message  
+msg = create_agent_message({"data": "here"})
+
+# Mixed message
+msg = Message(
+    role="agent",
+    parts=[
+        create_text_part("Status: Complete"),
+        create_data_part({"results": [...]})
+    ]
+)
+```
+
+### A2A Client Usage
+```python
+from utils.a2a_client import A2AClient
+
+# Create client
+client = A2AClient.from_registry("agent-name")
+
+# Send text
+await client.send_text("message")
+
+# Send data
+await client.send_data({"key": "value"})
+
+# Send message
+await client.send_message(message)
+
+# Clean up
+await client.close()
+```
+
+---
+
+**Remember**: The base handles all A2A complexity. Focus on your agent's unique functionality! Always use the correct Part types for A2A compliance.
