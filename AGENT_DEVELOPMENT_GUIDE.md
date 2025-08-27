@@ -1,5 +1,10 @@
 # Agent Development Guide
 
+**A2A Protocol Version:** dev  
+**Specification:** [A2A_SPECIFICATION.md](./A2A_SPECIFICATION.md)
+
+> ⚠️ **Compliance Notice**: This guide follows the Agent-to-Agent (A2A) Protocol Specification. All implementations MUST comply with the requirements defined in [A2A Spec §11](./A2A_SPECIFICATION.md#11-a2a-compliance-requirements).
+
 A step-by-step guide for creating A2A-compliant agents using this template.
 
 ## Table of Contents
@@ -36,12 +41,21 @@ export ANTHROPIC_API_KEY="your-claude-api-key"   # Alternative
 ```
 
 ### 3. Understanding Part Types (Critical for A2A)
-The A2A protocol uses discriminated union types for message parts:
-- **TextPart** (`kind: "text"`) - For human-readable strings
-- **DataPart** (`kind: "data"`) - For structured data (JSON-serializable)
-- **FilePart** (`kind: "file"`) - For file references
+**[A2A Spec §6.5]** The A2A protocol uses discriminated union types for message parts. A Part MUST be one of:
 
-⚠️ **Important**: Always use the correct Part type. Using TextPart for JSON data will cause parsing issues!
+- **TextPart** (`kind: "text"`) - For human-readable strings **[§6.5.1]**
+  - MUST include `kind: "text"` discriminator
+  - Contains `text: string` field
+  
+- **DataPart** (`kind: "data"`) - For structured data (JSON-serializable) **[§6.5.3]**
+  - MUST include `kind: "data"` discriminator
+  - Contains `data: { [key: string]: any }` field
+  
+- **FilePart** (`kind: "file"`) - For file references **[§6.5.2]**
+  - MUST include `kind: "file"` discriminator
+  - Contains `file: FileWithBytes | FileWithUri`
+
+⚠️ **Compliance Alert [§6.5]**: The `kind` field is a discriminator and MUST be present. Using TextPart for JSON data violates the specification and will cause parsing issues!
 
 ## Creating Your First Agent
 
@@ -72,9 +86,11 @@ class MySimpleAgent(A2AAgent):
     """Your agent description."""
     
     def get_agent_name(self) -> str:
+        """[A2A Spec §5.5] Required: Human-readable agent name"""
         return "My Simple Agent"
     
     def get_agent_description(self) -> str:
+        """[A2A Spec §5.5] Required: Agent purpose description"""
         return "Detailed description of what your agent does"
     
     async def process_message(self, message: str) -> Union[str, Dict, List]:
@@ -99,8 +115,8 @@ request_handler = DefaultRequestHandler(
 )
 
 app = A2AStarletteApplication(
-    agent_card=agent_card,
-    http_handler=request_handler
+    agent_card=agent_card,  # [A2A Spec §5.1] MUST make AgentCard available
+    http_handler=request_handler  # [§7] Handles RPC methods
 ).build()
 
 
@@ -188,8 +204,8 @@ request_handler = DefaultRequestHandler(
 )
 
 app = A2AStarletteApplication(
-    agent_card=agent_card,
-    http_handler=request_handler
+    agent_card=agent_card,  # [A2A Spec §5.1] MUST make AgentCard available
+    http_handler=request_handler  # [§7] Handles RPC methods
 ).build()
 
 if __name__ == "__main__":
@@ -201,8 +217,15 @@ if __name__ == "__main__":
 
 ## Message Handling Best Practices
 
+### Message Object Structure
+**[A2A Spec §6.4]** A Message object represents communication between client and agent. Required fields:
+- `role: "user" | "agent"` - Identifies the sender
+- `parts: Part[]` - Array of content parts (MUST contain at least one Part)
+- `messageId: string` - Unique identifier (typically UUID)
+- `kind: "message"` - Type discriminator
+
 ### Using Message Utils (Recommended)
-The template includes `utils/message_utils.py` for proper Part creation:
+The template includes `utils/message_utils.py` for spec-compliant Part creation:
 
 ```python
 from utils.message_utils import (
@@ -224,17 +247,21 @@ message = create_agent_message(
 ```
 
 ### DataPart vs TextPart Rules
-1. **Use DataPart for**:
-   - JSON objects/arrays
-   - Structured responses
-   - Inter-agent data transfer
-   - API responses
+**[A2A Spec §6.5.1 & §6.5.3]** Proper Part type selection is critical for compliance:
 
-2. **Use TextPart for**:
+1. **Use DataPart for** **[§6.5.3]**:
+   - JSON objects/arrays (structured data)
+   - Machine-readable information
+   - Inter-agent data transfer
+   - Forms, parameters, or any structured content
+   - API responses with structured data
+
+2. **Use TextPart for** **[§6.5.1]**:
+   - Plain textual content
    - Human-readable messages
-   - Markdown content
-   - Error messages
-   - Status updates
+   - Markdown formatted text
+   - Error messages for human consumption
+   - Status updates in natural language
 
 ### Returning Structured Data
 ```python
@@ -329,20 +356,24 @@ class MyMigratedAgent(A2AAgent):
         return MY_TOOLS
     
     def get_agent_skills(self) -> List[AgentSkill]:
-        """Optional: Define skills for agent discovery."""
+        """[A2A Spec §5.5.4] Define agent capabilities/skills"""
         return [
             AgentSkill(
-                id="skill_id",
-                name="Skill Name",
-                description="What this skill does",
-                tags=["tag1", "tag2"],
-                examples=["Example usage 1", "Example usage 2"]
+                # §5.5.4 - Required fields:
+                id="skill_id",  # Unique identifier
+                name="Skill Name",  # Human-readable name
+                description="What this skill does",  # Detailed description
+                tags=["tag1", "tag2"],  # Keywords for discovery
+                # Optional fields:
+                examples=["Example usage 1", "Example usage 2"],
+                inputModes=["text/plain", "application/json"],  # Override defaults
+                outputModes=["text/plain"]  # Override defaults
             )
         ]
     
     def supports_streaming(self) -> bool:
-        """Enable streaming for real-time updates."""
-        return True
+        """[A2A Spec §5.5.2] Declare streaming capability"""
+        return True  # Enables message/stream [§7.2] and tasks/resubscribe [§7.9]
     
     async def process_message(self, message: str) -> str:
         # Not called when tools are provided
@@ -351,16 +382,16 @@ class MyMigratedAgent(A2AAgent):
 
 # Standard app creation pattern
 agent = MyMigratedAgent()
-agent_card = agent.create_agent_card()
-task_store = InMemoryTaskStore()
+agent_card = agent.create_agent_card()  # [A2A Spec §5.5] Generate AgentCard
+task_store = InMemoryTaskStore()  # [§6.1] Store Task objects
 request_handler = DefaultRequestHandler(
     agent_executor=agent,
     task_store=task_store
 )
 
 app = A2AStarletteApplication(
-    agent_card=agent_card,
-    http_handler=request_handler
+    agent_card=agent_card,  # [A2A Spec §5.1] MUST make AgentCard available
+    http_handler=request_handler  # [§7] Handles RPC methods
 ).build()
 
 if __name__ == "__main__":
@@ -461,6 +492,8 @@ result = await generate_completion(
 
 ### Universal Test Suite
 
+**[A2A Spec §11.3]** Validate compliance through testing:
+
 Test any agent with our universal tester:
 
 ```bash
@@ -473,12 +506,12 @@ python test_any_agent.py examples.simple_echo_agent EchoAgent
 ```
 
 The tester validates:
-- Agent properties (name, description, version)
-- Agent card generation
-- Tool configuration
-- Skills definition
-- Message processing
-- A2A protocol compliance
+- Agent properties (name, description, version) **[§5.5]**
+- Agent card generation **[§5.5]**
+- Tool configuration (vendor-specific)
+- Skills definition **[§5.5.4]**
+- Message processing **[§6.4, §7.1]**
+- A2A protocol compliance **[§11]**
 
 ### Manual Testing
 
@@ -487,36 +520,53 @@ The tester validates:
 python examples/my_agent.py
 ```
 
-2. **Check agent card**:
+2. **Check agent card** **[A2A Spec §5.3]**:
 ```bash
-curl http://localhost:8000/.well-known/agent-card.json
+curl http://localhost:8000/.well-known/agentcard.json  # Primary well-known URI
+# OR
+curl http://localhost:8000/.well-known/agent-card.json  # Alternate
 ```
 
-3. **Send a test message**:
+3. **Send a test message** **[A2A Spec §7.1]**:
 ```bash
-curl -X POST http://localhost:8000/v1/message \
+# JSON-RPC transport [§3.2.1]
+curl -X POST http://localhost:8000 \
   -H "Content-Type: application/json" \
-  -d '{"message": "Test message"}'
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "user",
+        "parts": [{"kind": "text", "text": "Test message"}],
+        "messageId": "uuid-here"
+      }
+    }
+  }'
 ```
 
 ## Deployment
 
 ### For HealthUniverse
 
+#### Agent Discovery
+**[A2A Spec §5.2 & §5.3]** Agents MUST make their AgentCard available:
+
 1. **Ensure module-level `app` variable**:
 ```python
 # This MUST be at module level for HealthUniverse
 app = A2AStarletteApplication(
-    agent_card=agent_card,
-    http_handler=request_handler
+    agent_card=agent_card,  # [A2A Spec §5.1] MUST make AgentCard available
+    http_handler=request_handler  # [§7] Handles RPC methods
 ).build()
 ```
 
-2. **Agent Discovery**:
-The agent card is automatically served at these well-known URLs for discovery:
-- `/.well-known/agentcard.json` (A2A standard)
-- `/.well-known/agent-card.json` (alternate)
-- `/.well-known/agent.json` (HealthUniverse compatible)
+2. **Agent Discovery URLs**:
+**[A2A Spec §5.3]** The recommended well-known URI location:
+- `/.well-known/agentcard.json` - **Primary (A2A standard per RFC 8615)**
+- `/.well-known/agent-card.json` - Alternate format
+- `/.well-known/agent.json` - HealthUniverse compatible
 
 To add these routes manually in your main.py (if not using the template):
 ```python
@@ -545,24 +595,28 @@ HU_APP_URL=https://apps.healthuniverse.com/xxx-xxx-xxx
 ### For Inter-Agent Communication
 
 #### Text-Based Communication
+**[A2A Spec §7.1]** Using the message/send method:
+
 ```python
-# Simple text message
+# Simple text message via message/send [§7.1]
 response = await self.call_other_agent(
-    "agent-name",  # From config/agents.json
-    "Message to send"
+    "agent-name",  # From config/agents.json [§5.2 Discovery]
+    "Message to send"  # Will be wrapped in TextPart [§6.5.1]
 )
 ```
 
 #### Structured Data Communication (Recommended)
+**[A2A Spec §7.1 & §6.5.3]** Send structured data using DataPart:
+
 ```python
 from utils.message_utils import create_agent_message
 
-# Create structured message with DataPart
+# Create message with DataPart [§6.5.3] for structured data
 message = create_agent_message({
     "patterns": ["pattern1", "pattern2"],
     "document": "content",
     "metadata": {"source": "orchestrator"}
-}, role="user")
+}, role="user")  # [§6.4] role field is required
 
 # Send using A2A client
 from utils.a2a_client import A2AClient
@@ -621,13 +675,18 @@ tools/
 ```
 
 ### 4. Error Handling
-- The base handles A2A protocol errors
-- Focus on your business logic errors  
+**[A2A Spec §8]** Error handling follows JSON-RPC 2.0 standards:
+
+- The base handles A2A protocol errors **[§8.1 & §8.2]**
+- Standard JSON-RPC error codes (-32700 to -32099) **[§8.1]**
+- A2A-specific error codes (-32000 to -32099) **[§8.2]**
+- Focus on your business logic errors
 - Return helpful error messages
 - Log appropriately
-- For structured errors, return dict with "error" field:
+- For structured errors in DataPart, use error field:
   ```python
-  return {"error": "Invalid input", "details": "..."}
+  # Return as DataPart with error info
+  return {"error": "Invalid input", "code": -32602, "details": "..."}
   ```
 
 ### 5. Testing
@@ -667,16 +726,21 @@ def analyze_data(data: str, criteria: List[str]) -> str:
 ## Streaming Support
 
 ### Enabling Streaming
+**[A2A Spec §5.5.2 & §3.3]** Streaming capability must be declared in AgentCapabilities:
+
 ```python
 def supports_streaming(self) -> bool:
-    return True  # Enable streaming support
+    """[A2A Spec §5.5.2] Declares SSE streaming support"""
+    return True  # Enables message/stream [§7.2] and tasks/resubscribe [§7.9]
 ```
 
 ### Implementing Streaming Execute
+**[A2A Spec §7.2]** Streaming uses Server-Sent Events (SSE) for real-time updates:
+
 ```python
 async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-    """Execute with streaming updates."""
-    task = context.current_task
+    """[A2A Spec §7.2] Execute with SSE streaming updates"""
+    task = context.current_task  # [§6.1] Task object
     if not task:
         await super().execute(context, event_queue)
         return
@@ -684,10 +748,10 @@ async def execute(self, context: RequestContext, event_queue: EventQueue) -> Non
     updater = TaskUpdater(event_queue, task.id, task.context_id)
     
     try:
-        # Send status updates during processing
+        # [A2A Spec §7.2.2] Send TaskStatusUpdateEvent during processing
         await updater.update_status(
-            TaskState.working,
-            new_agent_text_message("Starting processing...")
+            TaskState.working,  # [§6.3] TaskState enum
+            new_agent_text_message("Starting processing...")  # [§6.4] Message object
         )
         
         # Do work...
@@ -769,7 +833,7 @@ async def process_message(self, message: str) -> str:
 
 ### Async Tool Functions
 
-Google ADK's `FunctionTool` supports async functions natively:
+Google ADK's `FunctionTool` supports async functions natively (vendor-specific, not A2A):
 
 ```python
 # Async functions work directly with FunctionTool
@@ -826,33 +890,51 @@ Two orchestration approaches:
 ## Common Issues and Solutions
 
 ### Issue: "Orchestrator only receiving 1 match when grep finds 8"
-**Cause**: Only reading `parts[0]` instead of all parts
-**Solution**: Iterate all parts in the message:
+**Cause**: Only reading `parts[0]` instead of all parts **[A2A Spec §6.4]**
+**Solution**: Messages can have multiple Parts - iterate all:
 ```python
+# [A2A Spec §6.4] parts is an array that may contain multiple Parts
 for part in message.get("parts", []):
-    if part.get("kind") == "data":
+    if part.get("kind") == "data":  # [§6.5] Check discriminator
         # Process ALL data parts
 ```
 
 ### Issue: "Input should be a valid dictionary" (LLM error)
-**Cause**: Incorrect Content object creation in llm_utils
-**Solution**: Use `types.Part.from_text(text=prompt)` not `types.Part(text=prompt)`
+**Cause**: Incorrect Content object creation (Google ADK specific)
+**Solution**: Use proper Part construction per vendor requirements:
+```python
+# Google ADK requirement (not A2A spec)
+types.Part.from_text(text=prompt)  # Correct
+# NOT: types.Part(text=prompt)  # Wrong
+```
 
 ### Issue: "Agent does not support streaming"
-**Cause**: `supports_streaming()` returns False
-**Solution**: Return True and implement `execute()` method with TaskUpdater
+**Cause**: Streaming not declared **[A2A Spec §5.5.2]**
+**Solution**: 
+1. Set `capabilities.streaming: true` in AgentCard **[§5.5.2]**
+2. Return True from `supports_streaming()`
+3. Implement `execute()` with SSE updates **[§7.2]**
 
 ### Issue: "No keywords detected" despite generation
-**Cause**: Using TextPart for JSON data instead of DataPart
-**Solution**: Return dict/list from `process_message()` for automatic DataPart wrapping
+**Cause**: Using TextPart for JSON data violates **[A2A Spec §6.5.3]**
+**Solution**: Return dict/list from `process_message()` for automatic DataPart wrapping:
+```python
+# Correct: Returns DataPart [§6.5.3]
+return {"keywords": [...]}  
+# Wrong: Returns TextPart [§6.5.1]
+return json.dumps({"keywords": [...]})  
+```
 
 ## Troubleshooting
 
 ### Issue: "No LLM API key found"
-**Solution**: Set one of the environment variables:
+**Authentication Required [A2A Spec §4]**
+**Solution**: Set API key environment variables (provider-specific, not A2A):
 - `GOOGLE_API_KEY`
-- `OPENAI_API_KEY`
+- `OPENAI_API_KEY`  
 - `ANTHROPIC_API_KEY`
+
+**Note**: A2A authentication is handled via HTTP headers **[§4.3]**
 
 ### Issue: "asyncio.run() cannot be called from a running event loop"
 **Solution**: Your tool functions are trying to create a new event loop. Use async functions directly without `asyncio.run()`.
@@ -869,19 +951,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 - Check system instruction mentions the tools
 - Ensure LLM API key is set
 
-### Issue: Agent card not accessible
+### Issue: Agent card not accessible  
+**[A2A Spec §5.1]** Agents MUST make AgentCard available
 **Solution**:
-- Check the module-level `app` variable exists
+- Verify well-known URI: `/.well-known/agentcard.json` **[§5.3]**
+- Check module-level `app` variable exists
 - Verify A2AStarletteApplication is built correctly
-- Try both endpoints: `/agent-card.json` and `/agent.json`
+- Ensure AgentCard has all required fields **[§5.5]**
 
 ## Next Steps
 
 1. Start with a simple agent to understand the pattern
-2. Add tools as needed for complex operations
-3. Test thoroughly with the universal tester
-4. Deploy and integrate with other agents
-5. Build orchestrators to coordinate multiple agents
+2. Ensure compliance with required methods **[A2A Spec §11.1.2]**
+3. Add tools as needed for complex operations (vendor-specific)
+4. Test thoroughly with the universal tester **[§11.3]**
+5. Deploy with proper AgentCard discovery **[§5.2, §5.3]**
+6. Build orchestrators to coordinate multiple agents **[§7.1]**
 
 ## Support
 
@@ -889,6 +974,55 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 - Review the [A2A Specification](A2A_SPECIFICATION.md)
 - See [Migration Guide Issue #18](https://github.com/jmjlacosta/a2a-template/issues/18) for complex migrations
 - Test with `test_any_agent.py` for validation
+
+## A2A Compliance Requirements
+
+**[A2A Spec §11]** To be A2A-compliant, your agent MUST meet these requirements:
+
+### Required Methods [§11.1.2]
+Every A2A agent MUST implement:
+- [ ] `message/send` - Send messages and initiate tasks [§7.1]
+- [ ] `tasks/get` - Retrieve task status and results [§7.3]
+- [ ] `tasks/cancel` - Request task cancellation [§7.4]
+
+### Optional Methods [§11.1.3]
+Agents MAY implement (must declare capability if supported):
+- [ ] `message/stream` - SSE streaming (requires `capabilities.streaming: true`) [§7.2]
+- [ ] `tasks/resubscribe` - Resume streaming (requires streaming capability) [§7.9]
+- [ ] Push notification methods (requires `capabilities.pushNotifications: true`) [§7.5-7.8]
+- [ ] `agent/getAuthenticatedExtendedCard` (requires `supportsAuthenticatedExtendedCard: true`) [§7.10]
+
+### Transport Requirements [§11.1.1]
+- [ ] Support at least ONE transport protocol [§3.2]:
+  - JSON-RPC 2.0 over HTTP [§3.2.1]
+  - gRPC over HTTP/2 [§3.2.2]
+  - REST-style HTTP+JSON [§3.2.3]
+- [ ] Declare supported transports in AgentCard [§5.6]
+
+### AgentCard Requirements [§5.5]
+Required fields in your AgentCard:
+- [ ] `protocolVersion` - A2A protocol version (e.g., "dev")
+- [ ] `name` - Human-readable agent name
+- [ ] `description` - Agent purpose description
+- [ ] `url` - Primary endpoint URL
+- [ ] `preferredTransport` - Transport at main URL [§5.6.1]
+- [ ] `version` - Your agent version
+- [ ] `capabilities` - Supported optional features [§5.5.2]
+- [ ] `defaultInputModes` - Default MIME types accepted
+- [ ] `defaultOutputModes` - Default MIME types produced
+- [ ] `skills` - Array of AgentSkill objects [§5.5.4]
+
+### Data Format Compliance [§11.1.5]
+- [ ] Use valid JSON-RPC 2.0 request/response format [§6.11]
+- [ ] Use proper Part discriminators (`kind` field) [§6.5]
+- [ ] Include all required Message fields [§6.4]
+- [ ] Use standard error codes [§8.1, §8.2]
+
+### Multi-Transport Compliance [§11.1.4]
+If supporting multiple transports:
+- [ ] Provide identical functionality across all transports
+- [ ] Use standard method mappings [§3.5]
+- [ ] Return semantically equivalent results
 
 ---
 
@@ -943,6 +1077,50 @@ await client.send_message(message)
 await client.close()
 ```
 
+## A2A Specification Reference Table
+
+| Guide Topic | A2A Spec Section | Description |
+|-------------|------------------|-------------|
+| **Part Types** | §6.5 | Discriminated union (TextPart, DataPart, FilePart) |
+| TextPart | §6.5.1 | Human-readable text content |
+| DataPart | §6.5.3 | Structured JSON data |
+| FilePart | §6.5.2 | File references (bytes or URI) |
+| **Messages** | §6.4 | Communication between client/agent |
+| Message Structure | §6.4 | role, parts[], messageId, kind fields |
+| **Tasks** | §6.1 | Stateful unit of work |
+| Task Status | §6.2 | Current state and context |
+| Task States | §6.3 | Lifecycle states enum |
+| **Agent Card** | §5.5 | Agent metadata and capabilities |
+| Discovery | §5.2, §5.3 | Well-known URI and mechanisms |
+| Skills | §5.5.4 | AgentSkill object definition |
+| Capabilities | §5.5.2 | Optional features declaration |
+| **Transport** | §3.2 | Protocol options (JSON-RPC, gRPC, REST) |
+| JSON-RPC | §3.2.1 | Primary transport protocol |
+| Streaming | §3.3 | Server-Sent Events (SSE) |
+| **Methods** | §7 | RPC method definitions |
+| message/send | §7.1 | Send message to agent |
+| message/stream | §7.2 | Send with SSE streaming |
+| tasks/get | §7.3 | Retrieve task status |
+| tasks/cancel | §7.4 | Cancel ongoing task |
+| **Errors** | §8 | Error handling standards |
+| JSON-RPC Errors | §8.1 | Standard error codes |
+| A2A Errors | §8.2 | Protocol-specific errors |
+| **Authentication** | §4 | Security and auth |
+| **Compliance** | §11 | Requirements for compliance |
+| Agent Requirements | §11.1 | What agents must implement |
+| Client Requirements | §11.2 | What clients must support |
+
+## Transport Method Mapping [§3.5.6]
+
+| JSON-RPC Method | gRPC Method | REST Endpoint | Required |
+|-----------------|-------------|---------------|----------|
+| message/send | SendMessage | POST /v1/message:send | ✅ Yes |
+| message/stream | SendStreamingMessage | POST /v1/message:stream | Optional |
+| tasks/get | GetTask | GET /v1/tasks/{id} | ✅ Yes |
+| tasks/cancel | CancelTask | POST /v1/tasks/{id}:cancel | ✅ Yes |
+| tasks/list | ListTask | GET /v1/tasks | Optional |
+| tasks/resubscribe | TaskSubscription | POST /v1/tasks/{id}:subscribe | Optional |
+
 ---
 
-**Remember**: The base handles all A2A complexity. Focus on your agent's unique functionality! Always use the correct Part types for A2A compliance.
+**Remember**: The base handles all A2A complexity. Focus on your agent's unique functionality! Always use the correct Part types for A2A compliance. Refer to the [A2A Specification](./A2A_SPECIFICATION.md) for authoritative requirements.
