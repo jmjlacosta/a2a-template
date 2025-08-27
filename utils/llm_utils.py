@@ -51,7 +51,7 @@ def _create_runner(agent_name: str, agent) -> Runner:
 # Default models for each provider
 DEFAULTS = {
     "anthropic": "anthropic/claude-3-5-sonnet-20241022",
-    "openai": "openai/gpt-4o-mini",
+    "openai": "gpt-4o-mini",  # GPT-4o-mini (no org verification required)
     "google": "gemini-2.0-flash-exp",
 }
 
@@ -119,8 +119,8 @@ def create_llm_agent(
         gen_cfg["max_output_tokens"] = int(max_tokens)   # Gemini style
     
     # Build provider-specific model handle
-    if provider in ("anthropic", "openai") or detected_model.startswith(("anthropic/", "openai/")):
-        # LiteLLM wrapper - don't pass default_params as it causes issues
+    if provider in ("anthropic", "openai") or detected_model.startswith(("anthropic/", "openai/", "gpt-", "o1-", "o3-")):
+        # LiteLLM wrapper - handles OpenAI models (gpt-*, o1-*, o3-*) and Anthropic
         model_obj = LiteLlm(
             model=detected_model,
         )

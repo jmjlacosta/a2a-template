@@ -72,6 +72,11 @@ class KeywordAgent(A2AAgent):
         try:
             # Parse input
             data = self._parse_input(message)
+            
+            # Check if this is a diagnostic request
+            if data.get("diagnostic_mode"):
+                return await self._run_diagnostics()
+            
             preview = data.get("document_preview", message[:4000])
             focus_areas = data.get("focus_areas", [])
             
@@ -86,8 +91,15 @@ class KeywordAgent(A2AAgent):
             
         except Exception as e:
             logger.error(f"Error generating patterns: {e}")
-            # Return fallback patterns as dict
-            return self._get_fallback_patterns_json()
+            # Return fallback patterns with error info
+            fallback = self._get_fallback_patterns_json()
+            fallback["error_info"] = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "api_keys_detected": self._check_api_keys(),
+                "provider_info": self._get_provider_info()
+            }
+            return fallback
 
     async def _generate_patterns(self, preview: str, focus_areas: List[str]) -> Dict[str, Any]:
         """Generate patterns using structured LLM output."""
@@ -200,11 +212,18 @@ class KeywordAgent(A2AAgent):
             logger.warning(f"LLM pattern generation failed: {e}, using enhanced fallbacks")
             fallback = self._get_fallback_patterns_json()
             fallback["source"] = "fallback"
+            fallback["status"] = "error"
+            fallback["error_details"] = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "api_keys_detected": self._check_api_keys(),
+                "provider_attempted": self._get_provider_info()
+            }
             
             # Create flat patterns list
             flat_patterns = []
             for category in fallback:
-                if category != "source" and isinstance(fallback[category], list):
+                if category not in ["source", "status", "error_details"] and isinstance(fallback[category], list):
                     for p in fallback[category]:
                         if isinstance(p, dict) and "pattern" in p:
                             flat_patterns.append(p["pattern"])
@@ -346,3 +365,67 @@ Return ONLY valid JSON matching the schema. No additional text."""
                 {"pattern": r"(?i)(?:o2\s+sat|oxygen\s+saturation|spo2)[\s:]+\d{2,3}%?", "priority": "high", "description": "Oxygen saturation"},
             ]
         }
+    
+    def _check_api_keys(self) -> Dict[str, bool]:
+        """Check which API keys are present (without exposing values)"""
+        import os
+        return {
+            "openai": bool(os.getenv("OPENAI_API_KEY")),
+            "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "google": bool(os.getenv("GOOGLE_API_KEY")),
+            "gemini": bool(os.getenv("GEMINI_API_KEY"))
+        }
+    
+    def _get_provider_info(self) -> Dict[str, str]:
+        """Get info about which provider would be used"""
+        import os
+        if os.getenv("ANTHROPIC_API_KEY"):
+            return {"provider": "anthropic", "model": "claude-3-5-sonnet"}
+        elif os.getenv("OPENAI_API_KEY"):
+            return {"provider": "openai", "model": "gpt-4o-mini"}
+        elif os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+            return {"provider": "google", "model": "gemini-2.0-flash-exp"}
+        else:
+            return {"provider": "none", "model": "none"}
+    
+    async def _run_diagnostics(self) -> Dict[str, Any]:
+        """Run diagnostics and return status"""
+        import sys
+        import platform
+        
+        diagnostics = {
+            "agent": "keyword",
+            "version": self.get_agent_version(),
+            "api_keys": self._check_api_keys(),
+            "provider": self._get_provider_info(),
+            "python_version": sys.version,
+            "platform": platform.platform()
+        }
+        
+        # Try a simple LLM call
+        try:
+            from utils.llm_utils import generate_text
+            test_response = await generate_text(
+                prompt="Say 'test successful' and nothing else",
+                max_tokens=10,
+                temperature=0
+            )
+            diagnostics["llm_test"] = {
+                "status": "success",
+                "response": test_response[:50]
+            }
+        except Exception as e:
+            diagnostics["llm_test"] = {
+                "status": "failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+        
+        # Try importing key dependencies
+        try:
+            import litellm
+            diagnostics["litellm_version"] = litellm.__version__ if hasattr(litellm, '__version__') else "unknown"
+        except ImportError:
+            diagnostics["litellm_version"] = "not installed"
+        
+        return diagnostics
