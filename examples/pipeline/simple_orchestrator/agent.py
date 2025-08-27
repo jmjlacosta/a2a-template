@@ -237,6 +237,9 @@ class SimpleOrchestratorAgent(A2AAgent):
             "focus_areas": ["temporal_events", "dated_diagnoses", "medication_changes", "procedures_with_dates", "admission_discharge_dates"]
         })
         
+        # Store diagnostic info for later
+        self.keyword_diagnostic = None
+        
         # Call keyword agent
         try:
             response = await self.call_other_agent_message(
@@ -273,6 +276,26 @@ class SimpleOrchestratorAgent(A2AAgent):
             
             patterns = self._extract_patterns(response)
             self.logger.info(f"📊 Extracted {len(patterns)} patterns from keyword agent response")
+            
+            # Log and store diagnostic info if present
+            try:
+                import json as json_module
+                response_data = json_module.loads(response) if isinstance(response, str) else response
+                if isinstance(response_data, dict) and "diagnostic_info" in response_data:
+                    self.keyword_diagnostic = response_data["diagnostic_info"]
+                    diag = self.keyword_diagnostic
+                    self.logger.info(f"🔍 Keyword Diagnostic: API keys={diag.get('api_keys_detected', {})}, Provider={diag.get('provider_info', {})}, Source={diag.get('source', 'unknown')}")
+                    if "error_message" in diag:
+                        self.logger.warning(f"⚠️ Keyword LLM Error: {diag.get('error_message', 'unknown error')}")
+                # Also check for llm_error from fallback
+                if isinstance(response_data, dict) and "llm_error" in response_data:
+                    if not self.keyword_diagnostic:
+                        self.keyword_diagnostic = {}
+                    self.keyword_diagnostic["llm_error"] = response_data["llm_error"]
+                    self.logger.warning(f"⚠️ Keyword LLM failed: {response_data['llm_error'].get('error_message', 'unknown')}")
+            except:
+                pass  # Don't fail if diagnostic parsing fails
+                
         except Exception as e:
             self.logger.warning(f"Keyword agent error: {e}, using fallback patterns")
             patterns = self._get_fallback_patterns()
@@ -666,6 +689,37 @@ class SimpleOrchestratorAgent(A2AAgent):
         execution_time: float
     ) -> str:
         """Format the final pipeline response."""
+        
+        # Add diagnostic info if available
+        diagnostic_text = ""
+        if hasattr(self, 'keyword_diagnostic') and self.keyword_diagnostic:
+            diag = self.keyword_diagnostic
+            diagnostic_text = "\n**Keyword Agent Diagnostic:**\n"
+            
+            # Check API keys
+            api_keys = diag.get('api_keys_detected', {})
+            if api_keys:
+                keys_status = ", ".join([f"{k}: {'✓' if v else '✗'}" for k, v in api_keys.items()])
+                diagnostic_text += f"- API Keys: {keys_status}\n"
+            
+            # Provider info
+            provider = diag.get('provider_info', {})
+            if provider:
+                diagnostic_text += f"- Provider: {provider.get('provider', 'none')}, Model: {provider.get('model', 'none')}\n"
+            
+            # Pattern source
+            source = diag.get('source', 'unknown')
+            diagnostic_text += f"- Pattern Source: {source}\n"
+            
+            # LLM error if present
+            if 'error_message' in diag:
+                diagnostic_text += f"- Error: {diag['error_message'][:200]}\n"
+            elif 'llm_error' in diag:
+                llm_err = diag['llm_error']
+                diagnostic_text += f"- LLM Error: {llm_err.get('error_type', 'unknown')} - {llm_err.get('error_message', 'unknown')[:200]}\n"
+            
+            diagnostic_text += "\n"
+        
         return (
             f"## Medical Document Analysis Complete\n\n"
             f"**Execution Time:** {execution_time:.2f} seconds\n\n"
@@ -674,6 +728,7 @@ class SimpleOrchestratorAgent(A2AAgent):
             f"- Matches found: {len(matches)}\n"
             f"- Chunks extracted: {len(chunks)}\n"
             f"- Chunks analyzed: {min(len(chunks), self.MAX_MATCHES_FOR_CHUNKS)}\n\n"
+            f"{diagnostic_text}"
             f"**Summary:**\n{summary}\n\n"
             f"---\n*Analysis performed by Simple Pipeline Orchestrator v2.0*"
         )
