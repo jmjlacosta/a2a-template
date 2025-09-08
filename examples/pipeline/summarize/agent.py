@@ -145,7 +145,7 @@ Always ensure medical accuracy and never omit critical information."""
                 future = asyncio.ensure_future(generate_text(
                     prompt=prompt,
                     system_instruction="You are a medical document summarizer. Create clear, concise summaries.",
-                    temperature=0.3,
+                    temperature=0.1,  # Low temperature for consistent summaries
                     max_tokens=1500
                 ))
                 # This is tricky - we're in a sync function called from async
@@ -157,7 +157,7 @@ Always ensure medical accuracy and never omit critical information."""
                 summary = asyncio.run(generate_text(
                     prompt=prompt,
                     system_instruction="You are a medical document summarizer. Create clear, concise summaries.",
-                    temperature=0.3,
+                    temperature=0.1,  # Low temperature for consistent summaries
                     max_tokens=1500
                 ))
                 return summary or "Summary generation failed."

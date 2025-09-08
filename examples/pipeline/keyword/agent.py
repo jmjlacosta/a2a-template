@@ -195,7 +195,7 @@ class KeywordAgent(A2AAgent):
                 prompt=prompt,
                 system_instruction=self.get_system_instruction(),
                 schema=schema,
-                temperature=0.3,  # Low temperature for consistency
+                temperature=0.0,  # Zero temperature for deterministic output
                 max_tokens=2000,
                 strict=False  # Be flexible while patterns stabilize
             )
