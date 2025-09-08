@@ -53,7 +53,7 @@ class SummarizeAgent(A2AAgent):
         ]
 
     def supports_streaming(self) -> bool:
-        return False
+        return True
 
     def get_system_instruction(self) -> str:
         return """You are a medical document summarization expert. Your role is to create concise, accurate summaries of medical document chunks.

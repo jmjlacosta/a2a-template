@@ -49,7 +49,7 @@ class KeywordAgent(A2AAgent):
         ]
 
     def supports_streaming(self) -> bool:
-        return False
+        return True
 
     def get_system_instruction(self) -> str:
         return (
