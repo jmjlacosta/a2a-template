@@ -87,154 +87,69 @@ class SimpleOrchestratorAgent(A2AAgent):
             "Execute the fixed pipeline sequence and return structured results."
         )
 
-    # --- Streaming Execute for Meta Orchestrator ---
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        """
-        Execute with streaming updates for meta orchestrator.
-        Emits incremental status updates between pipeline steps.
-        """
-        task = context.current_task
-        if not task:
-            # Fallback to parent execute if no task
-            await super().execute(context, event_queue)
-            return
-            
-        updater = TaskUpdater(event_queue, task.id, getattr(task, 'context_id', task.id))
-        
-        try:
-            # Extract message from context
-            message = self._extract_message_text(context)
-            
-            # Send initial working status
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("🚀 Starting cancer summarization pipeline...")
-            )
-            
-            # Parse input
-            t0 = time.time()
-            document = self._extract_document(message)
-            
-            # --- STEP 1: KEYWORDS ---
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("📝 STEP 1: Generating keyword patterns...")
-            )
-            patterns = await self._step_keywords(document)
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message(f"✓ Generated {len(patterns)} keyword patterns")
-            )
-            
-            # --- STEP 2: GREP ---
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("🔍 STEP 2: Searching document with patterns...")
-            )
-            matches = await self._step_grep(patterns, document)
-            unique_matches = self._deduplicate_matches(matches)
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message(f"✓ Found {len(unique_matches)} unique matches")
-            )
-            
-            # --- STEP 3: CHUNKS ---
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("📄 STEP 3: Extracting text chunks...")
-            )
-            chunks = await self._step_chunk(unique_matches[:self.MAX_MATCHES_FOR_CHUNKS], document)
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message(f"✓ Extracted {len(chunks)} text chunks")
-            )
-            
-            # --- STEP 4: SUMMARIZE ---
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("📊 STEP 4: Generating summary...")
-            )
-            summary = await self._step_summarize(chunks, len(matches))
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message("✓ Summary generation complete")
-            )
-            
-            # Format final response
-            elapsed = time.time() - t0
-            final_text = self._format_final_result(
-                summary, patterns, unique_matches, chunks, elapsed
-            )
-            
-            # Send final result as working status, then complete
-            await updater.update_status(
-                TaskState.working,
-                new_agent_text_message(final_text)
-            )
-            await updater.complete()
-            
-        except Exception as e:
-            self.logger.error(f"Pipeline error: {e}", exc_info=True)
-            await updater.update_status(
-                TaskState.failed,
-                new_agent_text_message(f"❌ Pipeline failed: {str(e)}")
-            )
-            raise
 
-    # --- Core Pipeline Logic ---
     async def process_message(self, message: str) -> str:
         """
-        Execute the fixed pipeline on the input document.
-        This is the main entry point called by the A2A framework.
+        Process message - run the full pipeline.
+        The base class execute() handles TaskUpdater for streaming.
         """
         t0 = time.time()
-        self.logger.info("🚀 Starting simple pipeline")
-
-        # Parse input if it's JSON
+        self.logger.info("Starting document analysis pipeline")
+        
+        # Parse input
         document = self._extract_document(message)
-
-        # --- STEP 1: KEYWORDS ---
-        self.logger.info("STEP 1: Generating keyword patterns")
+        
+        # Run pipeline steps
+        self.logger.info("Step 1/4: Generating keyword patterns")
         patterns = await self._step_keywords(document)
-        self.logger.info(f"  Generated {len(patterns)} patterns")
-
-        # --- STEP 2: GREP ---
-        self.logger.info("STEP 2: Searching with patterns")
+        self.logger.info(f"Step 1/4 complete: Generated {len(patterns)} patterns")
+        
+        self.logger.info("Step 2/4: Searching document with patterns")
         matches = await self._step_grep(patterns, document)
-        self.logger.info(f"  Found {len(matches)} matches")
-
-        # Deduplicate by line number
         unique_matches = self._deduplicate_matches(matches)
-        matches_to_chunk = unique_matches[: self.MAX_MATCHES_FOR_CHUNKS]
-        self.logger.info(f"  Deduped to {len(matches_to_chunk)} unique matches for chunking")
-
-        # --- STEP 3: CHUNK ---
-        self.logger.info("STEP 3: Extracting chunks")
-        chunks = await self._step_chunk(matches_to_chunk, document)
-        self.logger.info(f"  Extracted {len(chunks)} chunks")
-
-        # --- STEP 4: SUMMARIZE ---
-        self.logger.info("STEP 4: Summarizing results")
+        self.logger.info(f"Step 2/4 complete: Found {len(unique_matches)} matches")
+        
+        self.logger.info("Step 3/4: Extracting text chunks")
+        chunks = await self._step_chunk(unique_matches[:self.MAX_MATCHES_FOR_CHUNKS], document)
+        self.logger.info(f"Step 3/4 complete: Extracted {len(chunks)} chunks")
+        
+        self.logger.info("Step 4/4: Generating summary")
         summary = await self._step_summarize(chunks, len(matches))
-        self.logger.info("  Summarization complete")
-
-        # Build final response
-        dt = time.time() - t0
-        self.logger.info(f"✅ Pipeline complete in {dt:.2f}s")
-
-        return self._format_final_response(
-            patterns, matches, chunks, summary, dt
+        self.logger.info("Step 4/4 complete: Summary generated")
+        
+        # Format and return result
+        elapsed = time.time() - t0
+        final_text = self._format_final_response(
+            patterns, unique_matches, chunks, summary, elapsed
         )
+        
+        self.logger.info(f"Pipeline complete in {elapsed:.2f}s")
+        return final_text
 
     # --- Pipeline Steps ---
     async def _step_keywords(self, document: str) -> List[str]:
         """Step 1: Generate keyword patterns using the keyword agent."""
         # Build request with DataPart
-        preview = document[:4000]  # First 4000 chars as preview
+        preview = document[:2000]  # First 2000 chars as preview
         
         keyword_msg = self._build_message_with_data({
             "document_preview": preview,
-            "focus_areas": ["temporal_events", "dated_diagnoses", "medication_changes", "procedures_with_dates", "admission_discharge_dates"]
+            "focus_areas": [
+                "medications",  # Look for medication names
+                "diagnoses",    # Look for medical conditions
+                "vital_signs",  # Blood pressure, heart rate, etc.
+                "lab_results",  # Lab values and test results
+                "dates"         # Any dates mentioned
+            ],
+            "instruction": (
+                "Generate keyword patterns to find important medical information in the full document. "
+                "This preview shows the beginning of the document - it's EXPECTED and GOOD to create patterns "
+                "that match terms you see here, as they likely appear throughout the document. "
+                "For example, if you see 'diabetes' or 'Metformin' in this preview, create patterns to find "
+                "all mentions of these terms. Focus on actual medical terms, medication names, conditions, "
+                "and values that appear in the text. Simple word patterns like 'diabetes', 'metformin', "
+                "'blood pressure', 'mg/dL' are perfect."
+            )
         })
         
         # Store diagnostic info for later
@@ -312,14 +227,23 @@ class SimpleOrchestratorAgent(A2AAgent):
         # Quick self-test to see how many patterns would match
         import re
         test_matches = 0
+        matched_patterns = []
         for p in patterns[:10]:  # Test first 10 patterns
             try:
-                if re.search(p, document, re.IGNORECASE):
+                match = re.search(p, document, re.IGNORECASE)
+                if match:
                     test_matches += 1
-                    self.logger.debug(f"Pattern '{p}' would match")
+                    matched_patterns.append((p, match.group()))
+                    self.logger.info(f"Pattern '{p}' matches: '{match.group()}'")
+                else:
+                    self.logger.debug(f"Pattern '{p}' - no match")
             except Exception as e:
-                self.logger.debug(f"Pattern '{p}' is invalid: {e}")
+                self.logger.warning(f"Pattern '{p}' is invalid regex: {e}")
+        
         self.logger.info(f"Self-test: {test_matches}/{min(10, len(patterns))} patterns would match")
+        if not matched_patterns and patterns:
+            self.logger.warning("No patterns matched! Sample document text:")
+            self.logger.warning(f"  {document[:200]!r}")
         
         grep_msg = self._build_message_with_data({
             "patterns": patterns,
@@ -606,7 +530,11 @@ class SimpleOrchestratorAgent(A2AAgent):
             return []
         
         self.logger.info(f"Pattern source: {source}")
-        self.logger.info(f"First 3 patterns: {deduped[:3]}")
+        self.logger.info(f"Total patterns extracted: {len(deduped)}")
+        if deduped:
+            self.logger.info("Sample patterns generated:")
+            for i, pattern in enumerate(deduped[:5], 1):
+                self.logger.info(f"  {i}. {pattern!r}")
         
         return deduped
 

@@ -27,8 +27,10 @@ import subprocess
 
 try:
     import httpx
+    import asyncio
+    import aiohttp
 except Exception:
-    print("Please `pip install httpx`", file=sys.stderr)
+    print("Please `pip install httpx aiohttp`", file=sys.stderr)
     sys.exit(1)
 
 # Make sure local imports resolve
@@ -192,80 +194,128 @@ def wait_until_ready(timeout: float = 30.0):
                 raise RuntimeError(f"Timed out waiting for {a['name']} on port {a['port']}")
 
 
-def send_message_to_orchestrator(text: str) -> str:
+async def send_message_to_orchestrator_async(text: str) -> str:
     """
-    Send a text message to the orchestrator using JSON-RPC protocol.
-    The orchestrator has tools, so it will process the message through its pipeline.
+    Send message to orchestrator and display streaming updates.
+    Uses SSE streaming to show real-time progress.
     """
     orchestrator_port = next(a["port"] for a in AGENTS if a["name"] == "orchestrator")
     endpoint = f"http://localhost:{orchestrator_port}/"
     
-    # Create JSON-RPC request
     import uuid
     payload = {
         "jsonrpc": "2.0",
-        "method": "message/send",
+        "method": "message/stream",  # Use streaming method
         "params": {
             "message": {
                 "role": "user",
                 "parts": [{"kind": "text", "text": text}],
-                "kind": "message",
-                "messageId": str(uuid.uuid4())
-            },
-            "metadata": {}
+                "messageId": str(uuid.uuid4()),
+                "kind": "message"
+            }
         },
         "id": 1
     }
     
-    print(f"\n📤 Sending message to orchestrator...")
-    print(f"   Message length: {len(text)} characters")
+    print(f"\nSending message to orchestrator...")
+    print(f"Message length: {len(text)} characters\n")
+    print("Pipeline Progress:")
+    print("-" * 60)
     
-    with httpx.Client(timeout=120.0) as client:
-        r = client.post(endpoint, json=payload)
-        r.raise_for_status()
-        
-        # Parse JSON-RPC response
-        data = r.json()
-        
-        # Check for errors
-        if "error" in data:
-            error = data["error"]
-            raise RuntimeError(f"JSON-RPC error {error.get('code')}: {error.get('message')}")
-        
-        # Extract result
-        result = data.get("result", {})
-        
-        # The orchestrator returns an artifact with parts
-        if isinstance(result, dict):
-            # Look for artifact parts
-            if "artifact" in result:
-                artifact = result["artifact"]
-                if "parts" in artifact:
-                    texts = []
-                    for part in artifact["parts"]:
-                        if part.get("kind") == "text":
-                            texts.append(part.get("text", ""))
-                    if texts:
-                        return "\n".join(texts)
+    final_result = None
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(endpoint, json=payload) as response:
+            # Check for SSE stream
+            content_type = response.headers.get('Content-Type', '')
+            if 'text/event-stream' not in content_type:
+                # Fallback to regular response
+                print("Note: Orchestrator does not support streaming, showing final result only")
+                data = await response.json()
+                if 'error' in data:
+                    raise RuntimeError(f"JSON-RPC error: {data['error']}")
+                return data.get('result')
             
-            # Try direct text extraction
-            if "text" in result:
-                return result["text"]
-            
-            # Look for parts directly
-            if "parts" in result:
+            # Parse SSE stream
+            buffer = ""
+            async for chunk in response.content.iter_any():
+                buffer += chunk.decode('utf-8', errors='ignore')
+                
+                # Process complete events
+                while '\n\n' in buffer:
+                    event_text, buffer = buffer.split('\n\n', 1)
+                    
+                    # Parse data field
+                    for line in event_text.split('\n'):
+                        if line.startswith('data: '):
+                            try:
+                                data = json.loads(line[6:])
+                                if 'result' in data:
+                                    result = data['result']
+                                    
+                                    # Display status updates
+                                    if result.get('kind') == 'status-update':
+                                        status = result.get('status', {})
+                                        msg = status.get('message', {})
+                                        
+                                        for part in msg.get('parts', []):
+                                            if part.get('kind') == 'text':
+                                                text = part.get('text', '')
+                                                
+                                                # Format based on content
+                                                if text.startswith('['):
+                                                    # Subagent update
+                                                    print(f"  {text}")
+                                                elif 'Step' in text:
+                                                    # Step progress
+                                                    print(f"\n{text}")
+                                                else:
+                                                    # General status
+                                                    print(text)
+                                    
+                                    # Capture final task
+                                    elif result.get('kind') == 'task':
+                                        final_result = result
+                                    
+                                    # Handle artifacts
+                                    elif 'artifacts' in result:
+                                        final_result = result
+                            except json.JSONDecodeError:
+                                pass
+    
+    print("-" * 60)
+    
+    # Extract final text from result
+    if final_result:
+        if isinstance(final_result, dict):
+            # Look for artifacts
+            if 'artifacts' in final_result:
                 texts = []
-                for part in result["parts"]:
-                    if part.get("kind") == "text":
-                        texts.append(part.get("text", ""))
+                for artifact in final_result['artifacts']:
+                    for part in artifact.get('parts', []):
+                        if part.get('kind') == 'text':
+                            texts.append(part.get('text'))
                 if texts:
-                    return "\n".join(texts)
+                    return '\n'.join(texts)
+            
+            # Look for artifact directly
+            if 'artifact' in final_result:
+                artifact = final_result['artifact']
+                if 'parts' in artifact:
+                    texts = []
+                    for part in artifact['parts']:
+                        if part.get('kind') == 'text':
+                            texts.append(part.get('text', ''))
+                    if texts:
+                        return '\n'.join(texts)
         
-        # Fallback to string representation
-        if isinstance(result, str):
-            return result
-        
-        return json.dumps(result, indent=2)
+        return json.dumps(final_result, indent=2)
+    
+    return "No result received"
+
+def send_message_to_orchestrator(text: str) -> str:
+    """Wrapper to run async function."""
+    return asyncio.run(send_message_to_orchestrator_async(text))
 
 
 def shutdown(procs: List[subprocess.Popen]):
@@ -332,20 +382,20 @@ def main():
         wait_until_ready(timeout=45.0)
         
         print("\n" + "="*80)
-        print("🏥 PROCESSING MEDICAL DOCUMENT")
+        print("DOCUMENT ANALYSIS PIPELINE")
         print("="*80)
         
-        # Send the message
+        # Send the message with streaming
         result = send_message_to_orchestrator(args.message)
         
         print("\n" + "="*80)
-        print("📋 PIPELINE RESULT")
+        print("ANALYSIS RESULT")
         print("="*80)
         print(result)
         print("="*80)
         
-        print("\n✅ Pipeline test complete!")
-        print("\n💡 Press Ctrl+C to stop all agents and exit.")
+        print("\nPipeline execution complete.")
+        print("\nPress Ctrl+C to stop all agents and exit.")
         
         # Keep running until interrupted
         while True:

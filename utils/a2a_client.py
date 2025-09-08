@@ -516,6 +516,103 @@ class A2AClient:
         # Return result as-is, preserving structure
         return result
 
+    async def send_message_streaming(self, message: Dict[str, Any], 
+                                    callback=None) -> Dict[str, Any]:
+        """
+        Send message using message/stream method (A2A section 7.2).
+        
+        Args:
+            message: A2A Message object
+            callback: Optional async function called for each TaskStatusUpdateEvent
+            
+        Returns:
+            Final Task object when complete
+        """
+        from .sse_client import SSEClient
+        
+        # Check if agent supports streaming first
+        if not await self.supports_streaming():
+            # Fall back to regular send if agent doesn't support streaming
+            logger.info("Agent does not support streaming, falling back to message/send")
+            return await self.send_message(message, timeout_sec=30)
+        
+        # Prepare JSON-RPC payload for streaming
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "message/stream",
+            "params": {"message": message},
+            "id": next(_jsonrpc_id_counter)
+        }
+        
+        final_task = None
+        
+        async with self._get_session() as session:
+            # Send streaming request
+            async with session.post(self.base_url, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise aiohttp.ClientError(f"Stream request failed ({response.status}): {error_text}")
+                
+                # Check for SSE content type
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/event-stream' not in content_type:
+                    # Not streaming, return regular response
+                    logger.info("Response is not SSE stream, parsing as regular JSON-RPC")
+                    data = await response.json()
+                    if 'error' in data:
+                        raise ValueError(f"JSON-RPC error: {data['error']}")
+                    return data.get('result')
+                
+                # Parse SSE stream
+                sse = SSEClient()
+                async for event in sse.parse_stream(response):
+                    if 'result' in event:
+                        result = event['result']
+                        
+                        # Handle different result types
+                        if isinstance(result, dict):
+                            kind = result.get('kind')
+                            
+                            if kind == 'status-update':
+                                # TaskStatusUpdateEvent
+                                if callback:
+                                    await callback(result)
+                            
+                            elif kind == 'task':
+                                # Task object - could be final or intermediate
+                                final_task = result
+                                
+                            elif kind == 'artifact-update':
+                                # TaskArtifactUpdateEvent
+                                if callback:
+                                    await callback(result)
+                            
+                            else:
+                                # Unknown result type, store as final
+                                final_task = result
+                    
+                    elif 'error' in event:
+                        raise ValueError(f"Stream error: {event['error']}")
+        
+        return final_task
+
+    async def supports_streaming(self, agent_url: str = None) -> bool:
+        """Check if agent supports streaming via AgentCard."""
+        url = agent_url or self.base_url
+        card_url = f"{url}/.well-known/agent-card.json"
+        
+        async with self._get_session() as session:
+            try:
+                async with session.get(card_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        card = await response.json()
+                        capabilities = card.get('capabilities', {})
+                        return capabilities.get('streaming', False)
+            except Exception as e:
+                logger.debug(f"Could not fetch agent card: {e}")
+        
+        return False
+
     async def test_agent_accessibility(self) -> Dict[str, Any]:
         """
         Test various endpoints of a Health Universe agent for accessibility.
