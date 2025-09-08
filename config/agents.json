@@ -1,19 +1,19 @@
 {
   "agents": {
     "keyword": {
-      "url": "http://localhost:8002"
+      "url": "https://keyword-cspipeline.healthuniverse.com"
     },
     "grep": {
-      "url": "http://localhost:8003"
+      "url": "https://grep-cspipeline.healthuniverse.com"
     },
     "chunk": {
-      "url": "http://localhost:8004"
+      "url": "https://chunk-cspipeline.healthuniverse.com"
     },
     "summarize": {
-      "url": "http://localhost:8005"
+      "url": "https://summarize-cspipeline.healthuniverse.com"
     },
     "orchestrator": {
-      "url": "http://localhost:8008"
+      "url": "https://orchestrator-cspipeline.healthuniverse.com"
     }
   }
 }
