@@ -287,7 +287,7 @@ class SimpleOrchestratorAgent(A2AAgent):
                     self.logger.info(f"🔍 Keyword Diagnostic: API keys={diag.get('api_keys_detected', {})}, Provider={diag.get('provider_info', {})}, Source={diag.get('source', 'unknown')}")
                     if "error_message" in diag:
                         self.logger.warning(f"⚠️ Keyword LLM Error: {diag.get('error_message', 'unknown error')}")
-                # Also check for llm_error from fallback
+                # Also check for llm_error from keyword agent
                 if isinstance(response_data, dict) and "llm_error" in response_data:
                     if not self.keyword_diagnostic:
                         self.keyword_diagnostic = {}
@@ -297,8 +297,8 @@ class SimpleOrchestratorAgent(A2AAgent):
                 pass  # Don't fail if diagnostic parsing fails
                 
         except Exception as e:
-            self.logger.warning(f"Keyword agent error: {e}, using fallback patterns")
-            patterns = self._get_fallback_patterns()
+            self.logger.error(f"❌ Keyword agent failed: {e}")
+            patterns = []  # No fallback patterns
         
         return patterns[: self.MAX_PATTERNS]
 
@@ -364,9 +364,9 @@ class SimpleOrchestratorAgent(A2AAgent):
                 )
                 chunks.append(chunk_resp)
             except Exception as e:
-                self.logger.warning(f"Chunk extraction error: {e}")
-                # Try to extract manually as fallback
-                chunks.append(self._extract_fallback_chunk(match, document))
+                self.logger.error(f"❌ Chunk extraction failed: {e}")
+                # No fallback - skip this chunk
+                continue
         
         return chunks
 
@@ -612,35 +612,15 @@ class SimpleOrchestratorAgent(A2AAgent):
                 deduped.append(p)
         
         if not deduped:
-            self.logger.warning("No patterns extracted, using fallbacks")
-            deduped = self._get_fallback_patterns()
-            source = "orchestrator_fallback"
+            self.logger.error("❌ No patterns extracted from keyword agent")
+            self.logger.error("Keyword agent may have failed - check LLM configuration")
+            # Return empty list - no fallbacks
+            return []
         
         self.logger.info(f"Pattern source: {source}")
-        if deduped:
-            self.logger.info(f"First 3 patterns: {deduped[:3]}")
+        self.logger.info(f"First 3 patterns: {deduped[:3]}")
         
         return deduped
-
-    def _get_fallback_patterns(self) -> List[str]:
-        """Get fallback patterns for medical documents."""
-        return [
-            r"(?i)diabetes",
-            r"(?i)hypertension",
-            r"(?i)diagnosis",
-            r"(?i)treatment",
-            r"\b\d+\s*(mg|ml|mcg|g|kg|lb)\b",
-            r"(?i)blood\s+pressure",
-            r"(?i)heart\s+rate",
-            r"(?i)temperature",
-            r"(?i)medication",
-            r"(?i)prescribed",
-            r"(?i)allergies",
-            r"(?i)symptoms",
-            r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",  # Dates
-            r"(?i)vital\s+signs",
-            r"(?i)lab\s+results",
-        ]
 
     def _parse_grep_results(self, response: Any) -> List[Dict[str, Any]]:
         """Parse grep agent response to extract ALL matches from ALL parts."""
@@ -665,20 +645,6 @@ class SimpleOrchestratorAgent(A2AAgent):
                 unique_by_line[line_num] = match
         return list(unique_by_line.values())
 
-    def _extract_fallback_chunk(self, match: Dict[str, Any], document: str) -> str:
-        """Extract a basic chunk as fallback."""
-        lines = document.splitlines()
-        line_num = match.get("line_number", 1) - 1  # Convert to 0-based
-        
-        start = max(0, line_num - self.LINES_BEFORE)
-        end = min(len(lines), line_num + self.LINES_AFTER + 1)
-        
-        chunk_lines = []
-        for i in range(start, end):
-            prefix = ">>>" if i == line_num else "   "
-            chunk_lines.append(f"{prefix} {i+1:4d}: {lines[i]}")
-        
-        return "\n".join(chunk_lines)
 
     def _format_final_response(
         self,
