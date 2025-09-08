@@ -1,19 +1,19 @@
 {
   "agents": {
     "keyword": {
-      "url": "https://keyword-cspipeline.healthuniverse.com"
+      "url": "https://apps.healthuniverse.com/aqt-iaj-val"
     },
     "grep": {
-      "url": "https://grep-cspipeline.healthuniverse.com"
+      "url": "https://apps.healthuniverse.com/noj-pue-nqe"
     },
     "chunk": {
-      "url": "https://chunk-cspipeline.healthuniverse.com"
+      "url": "https://apps.healthuniverse.com/fff-gab-lmy"
     },
     "summarize": {
-      "url": "https://summarize-cspipeline.healthuniverse.com"
+      "url": "https://apps.healthuniverse.com/ncc-epu-rfk"
     },
     "orchestrator": {
-      "url": "https://orchestrator-cspipeline.healthuniverse.com"
+      "url": "https://apps.healthuniverse.com/jmi-umj-lwx"
     }
   }
 }
