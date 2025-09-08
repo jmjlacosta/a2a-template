@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """
-Medical Summarizer Agent - Analyzes and summarizes medical text.
-Migrated from ADK demo pipeline to use enhanced A2AAgent base.
-
-This agent provides medical text analysis with:
-- Intelligent summarization at various detail levels
-- Medical entity extraction (diagnoses, medications, procedures)
-- Relevance scoring based on clinical importance
-- Clinical summary generation
-- Medical terminology analysis
+Medical Summarizer Agent - Analyzes and summarizes medical text using LLM.
+Returns plain text summaries that are wrapped in TextPart Artifacts.
 """
 
 import os
 import sys
+import json
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base import A2AAgent
-from tools.summarize_tools import SUMMARIZE_TOOLS
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentSkill
+from utils.llm_utils import generate_text
 
 
 class SummarizeAgent(A2AAgent):
@@ -37,171 +31,139 @@ class SummarizeAgent(A2AAgent):
     def get_agent_description(self) -> str:
         """Return detailed agent description."""
         return (
-            "LLM-powered agent that analyzes medical text chunks and creates accurate, "
-            "clinically relevant summaries. Extracts medical entities, scores relevance, "
-            "and generates various summary formats for clinical decision-making."
+            "LLM-powered agent that analyzes medical text chunks and creates "
+            "clinically relevant summaries. Always uses LLM to generate summaries "
+            "and returns them as plain text (wrapped in TextPart Artifacts)."
         )
     
     def get_agent_version(self) -> str:
         """Return agent version."""
-        return "2.0.0"
+        return "3.0.0"
     
     def get_system_instruction(self) -> str:
         """Return the system instruction for medical summarization."""
-        return """You are a medical document summarization specialist. Your role is to analyze medical text chunks and create accurate, clinically relevant summaries.
+        return """You are a medical document summarization specialist. Analyze medical text and create accurate, clinically relevant summaries.
 
-Core responsibilities:
-1. Summarize medical text with appropriate detail level
-2. Extract key medical entities (diagnoses, treatments, medications)
-3. Score relevance based on medical importance
-4. Generate clinical summaries from multiple sources
-5. Analyze medical terminology
+Focus on:
+- Primary diagnoses and conditions
+- Current medications and treatments
+- Key lab results and findings
+- Important dates and timeline
+- Clinical recommendations
 
-When summarizing medical text:
-- Prioritize clinically actionable information
-- Maintain medical accuracy and precision
-- Preserve critical details (dosages, dates, values)
+Guidelines:
+- Be concise but comprehensive
 - Use appropriate medical terminology
-- Highlight abnormal findings or critical results
+- Highlight critical findings
+- Maintain chronological order when relevant
+- Never invent information not in the source text
 
-For entity extraction:
-- Diagnoses: Include ICD codes, staging, severity
-- Medications: Drug name, dose, route, frequency
-- Procedures: Type, date, findings, complications
-- Lab results: Value, reference range, significance
-- Symptoms: Onset, duration, severity, associated factors
-
-Relevance scoring (0-10):
-- Consider medical importance over text length
-- Weight primary diagnoses and active treatments highly
-- Factor in temporal relevance (current vs past)
-- Account for pattern match quality
-- Prioritize abnormal or critical findings
-
-Summary styles:
-- Concise: 2-3 sentences with key findings
-- Detailed: Comprehensive paragraph with context
-- Clinical: Structured format focusing on diagnoses/treatments
-- Bullet: Key points in digestible format
-
-Quality guidelines:
-- Never invent or assume medical information
-- Flag inconsistencies or contradictions
-- Note when information is incomplete
-- Maintain patient safety focus
-- Use standard medical abbreviations appropriately
-
-For batch processing:
-- Identify relationships between chunks
-- Combine related information logically
-- Avoid redundancy while maintaining completeness
-- Create coherent narrative from fragments
-
-Always aim to produce summaries that would be useful for clinical decision-making."""
+Format: Provide a clear, readable summary in paragraph or bullet format as appropriate."""
     
-    def get_tools(self) -> List:
-        """Return the summarization tools."""
-        return SUMMARIZE_TOOLS
+    async def process_message(self, message: str) -> str:
+        """
+        Process summarization request using LLM.
+        
+        Args:
+            message: JSON string with chunk_content and optional metadata
+            
+        Returns:
+            Plain text summary (will be wrapped in TextPart Artifact by base class)
+        """
+        # Parse input
+        try:
+            if isinstance(message, str) and message.startswith('{'):
+                data = json.loads(message)
+            elif isinstance(message, dict):
+                data = message
+            else:
+                # Plain text message - summarize directly
+                data = {"chunk_content": message}
+            
+            chunk_content = data.get("chunk_content", "")
+            chunk_metadata = data.get("chunk_metadata", {})
+            summary_style = data.get("summary_style", "clinical")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse request: {e}")
+            # Return error as text (will still be wrapped in Artifact)
+            return f"Error parsing summarization request: {str(e)}"
+        
+        # Check if there's content to summarize
+        if not chunk_content or not chunk_content.strip():
+            return "No content provided to summarize."
+        
+        # Build prompt based on style
+        if summary_style == "clinical":
+            style_instruction = "Create a clinical-style summary focusing on diagnoses, treatments, and key findings."
+        elif summary_style == "concise":
+            style_instruction = "Create a brief 2-3 sentence summary capturing the most important medical information."
+        elif summary_style == "detailed":
+            style_instruction = "Create a comprehensive summary including all relevant medical details."
+        else:
+            style_instruction = "Create a clear medical summary."
+        
+        # Add metadata context if available
+        metadata_context = ""
+        if chunk_metadata:
+            source = chunk_metadata.get("source", "medical document")
+            total_matches = chunk_metadata.get("total_matches", 0)
+            chunks_analyzed = chunk_metadata.get("chunks_analyzed", 0)
+            
+            if total_matches > 0:
+                metadata_context = f"\nContext: Analyzing {chunks_analyzed} text chunks from {source} (found {total_matches} relevant sections).\n"
+        
+        # Create prompt for LLM
+        prompt = f"""{style_instruction}
+{metadata_context}
+Text to summarize:
+---
+{chunk_content}
+---
+
+Provide a clear medical summary based on the above text. Focus on clinically relevant information and maintain accuracy."""
+
+        # Call LLM to generate summary
+        try:
+            summary = await generate_text(
+                prompt=prompt,
+                system_instruction=self.get_system_instruction(),
+                temperature=0.3,  # Lower temperature for factual medical summaries
+                max_tokens=1000
+            )
+            
+            if not summary:
+                return "Unable to generate summary. Please try again."
+            
+            # Return plain text summary (base class handles Artifact wrapping)
+            return summary.strip()
+            
+        except Exception as e:
+            self.logger.error(f"LLM summarization failed: {e}")
+            return f"Error generating summary: {str(e)}"
     
     def get_agent_skills(self) -> List[AgentSkill]:
         """Return agent skills for the AgentCard."""
         return [
             AgentSkill(
-                id="summarize_medical_chunk",
-                name="Summarize Medical Chunk",
-                description="Create concise, accurate summary of medical text.",
-                tags=["summarization", "medical", "text-analysis", "clinical"],
+                id="medical_summarization",
+                name="Medical Text Summarization",
+                description="Generate clinically relevant summaries from medical text using LLM",
+                tags=["summarization", "medical", "clinical", "llm"],
                 examples=[
-                    "Summarize this diagnosis section",
-                    "Create a concise summary of medications",
-                    "Generate clinical summary of findings",
-                    "Summarize in bullet format"
+                    "Summarize medical findings",
+                    "Create clinical summary",
+                    "Generate concise medical brief",
+                    "Summarize patient records"
                 ],
-                input_modes=["application/json", "text/plain"],
-                output_modes=["application/json", "text/plain"]
-            ),
-            AgentSkill(
-                id="extract_medical_entities",
-                name="Extract Medical Entities",
-                description="Extract diagnoses, medications, procedures, and other medical entities.",
-                tags=["entity-extraction", "NER", "medical-terminology"],
-                examples=[
-                    "Extract all medications with dosages",
-                    "Find diagnosis codes",
-                    "Identify procedures mentioned",
-                    "Extract lab values and ranges"
-                ],
-                input_modes=["application/json", "text/plain"],
-                output_modes=["application/json", "text/plain"]
-            ),
-            AgentSkill(
-                id="score_medical_relevance",
-                name="Score Medical Relevance",
-                description="Score text relevance based on clinical importance (0-10).",
-                tags=["relevance-scoring", "ranking", "clinical-importance"],
-                examples=[
-                    "Score relevance of this finding",
-                    "Rank importance of multiple chunks",
-                    "Evaluate clinical significance",
-                    "Prioritize by medical importance"
-                ],
-                input_modes=["application/json", "text/plain"],
-                output_modes=["application/json", "text/plain"]
-            ),
-            AgentSkill(
-                id="batch_summarize_chunks",
-                name="Batch Summarize Chunks",
-                description="Summarize multiple text chunks into coherent narrative.",
-                tags=["batch-processing", "multi-chunk", "synthesis"],
-                examples=[
-                    "Combine multiple section summaries",
-                    "Synthesize findings from different sources",
-                    "Create unified patient summary",
-                    "Merge related information"
-                ],
-                input_modes=["application/json", "text/plain"],
-                output_modes=["application/json", "text/plain"]
-            ),
-            AgentSkill(
-                id="generate_clinical_summary",
-                name="Generate Clinical Summary",
-                description="Create structured clinical summary with key findings.",
-                tags=["clinical-summary", "structured-output", "decision-support"],
-                examples=[
-                    "Generate discharge summary format",
-                    "Create SOAP note summary",
-                    "Produce clinical brief",
-                    "Format for physician handoff"
-                ],
-                input_modes=["application/json", "text/plain"],
-                output_modes=["application/json", "text/plain"]
-            ),
-            AgentSkill(
-                id="analyze_medical_terminology",
-                name="Analyze Medical Terminology",
-                description="Analyze and explain medical terms and abbreviations.",
-                tags=["terminology", "abbreviations", "medical-language"],
-                examples=[
-                    "Explain medical abbreviations",
-                    "Define medical terms",
-                    "Expand acronyms",
-                    "Clarify medical jargon"
-                ],
-                input_modes=["application/json", "text/plain"],
-                output_modes=["application/json", "text/plain"]
+                input_modes=["text/plain", "application/json"],
+                output_modes=["text/plain"]
             )
         ]
     
     def supports_streaming(self) -> bool:
         """Enable streaming for real-time summarization."""
         return True
-    
-    async def process_message(self, message: str) -> str:
-        """
-        This won't be called when tools are provided.
-        The base handles everything via Google ADK LlmAgent.
-        """
-        return "Handled by tool execution"
 
 
 # Module-level app creation for HealthUniverse deployment
@@ -227,12 +189,9 @@ if __name__ == "__main__":
     print(f"🚀 Starting {agent.get_agent_name()}")
     print(f"📍 Server: http://localhost:{port}")
     print(f"📋 Agent Card: http://localhost:{port}/.well-known/agent-card.json")
-    print(f"🛠️ Tools available: {len(agent.get_tools())}")
-    print("\n📝 Example queries:")
-    print('  - "Summarize this medical text in concise format"')
-    print('  - "Extract all medications and diagnoses from this chunk"')
-    print('  - "Score the clinical relevance of this finding"')
-    print('  - "Generate a clinical summary from these chunks"')
-    print('  - "Analyze the medical terminology in this text"')
+    print(f"🤖 LLM-powered summarization (no fallbacks)")
+    print(f"📝 Returns text summaries as Artifacts")
+    print("\n📝 Example input:")
+    print('  {"chunk_content": "medical text...", "summary_style": "clinical"}')
     
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -7,13 +7,89 @@
 
 A step-by-step guide for creating A2A-compliant agents using this template.
 
+## 🚨 Critical Concepts for Orchestrator Development
+
+### Orchestrator Responsibilities
+**Every orchestrator MUST retransmit updates from subagents**. The orchestrator acts as a relay between subagents and the user, ensuring all progress updates are visible:
+
+1. **Update Retransmission**: Forward all TaskStatusUpdateEvents from subagents
+2. **Response Handling**: Process subagent responses as either:
+   - **Artifacts** (DataPart/TextPart): Complete outputs ready for use/display
+   - **Messages** (free text): Requests for user input requiring feedback
+
+### Artifacts vs Messages
+Per A2A specification, agents use two distinct types for different purposes:
+
+| Type | Purpose | Direction | Example |
+|------|---------|-----------|---------|
+| **Message** | Communication/requests | Client→Agent | User query, orchestrator request |
+| **Artifact** | Outputs/results | Agent→Client | Analysis results, generated content |
+
+**Key Principle**: Agents receive Messages and produce Artifacts.
+
+```python
+# Orchestrator sends Message (request)
+response = await self.call_agent("analyzer", {
+    "operation": "analyze",
+    "data": lab_results
+})
+
+# Agent internally:
+# 1. Receives Message via execute()
+# 2. Processes via process_message()
+# 3. Returns result (automatically wrapped in Artifact by base.py)
+# 4. Task contains: history=[Message], artifacts=[Artifact]
+
+# Orchestrator receives Artifact (extracted from Task)
+print(response)  # This is the Artifact with results
+```
+
+## Understanding the Message→Artifact Flow
+
+When working with the A2A protocol, it's crucial to understand the flow of data:
+
+1. **Orchestrator → Agent**: Sends a **Message** (request)
+   - Contains `role: "user"` 
+   - Has `parts` array with TextPart or DataPart
+   - Represents a request or instruction
+
+2. **Agent Processing**: Receives Message, processes it
+   - Agent's `process_message()` method handles the request
+   - Returns output data (string, dict, or list)
+
+3. **Agent → Orchestrator**: Returns an **Artifact** (output)
+   - Automatically wrapped by base.py
+   - Contains `artifactId` and `parts`
+   - Represents the result or output
+
+Example flow:
+```python
+# 1. Orchestrator sends Message to agent
+message = {
+    "role": "user",
+    "parts": [{"kind": "text", "text": "Analyze this sample"}],
+    "messageId": "msg-123"
+}
+
+# 2. Agent processes and returns output
+output = {"analysis": "complete", "result": "positive"}
+
+# 3. base.py wraps output as Artifact
+artifact = {
+    "artifactId": "result-task-123",
+    "parts": [{"kind": "data", "data": output}],
+    "name": "Analysis Result"
+}
+```
+
 ## Table of Contents
 1. [Overview](#overview)
 2. [Prerequisites](#prerequisites)
-3. [Creating Your First Agent](#creating-your-first-agent)
-4. [Migration Guide](#migration-guide-converting-existing-code)
-5. [Testing Your Agent](#testing-your-agent)
-6. [Deployment](#deployment)
+3. [Orchestrator Communication Patterns](#orchestrator-communication-patterns)
+4. [Creating Your First Agent](#creating-your-first-agent)
+5. [Migration Guide](#migration-guide-converting-existing-code)
+6. [Testing Your Agent](#testing-your-agent)
+7. [Deployment](#deployment)
 
 ## Overview
 
@@ -23,6 +99,118 @@ Agent types:
 - **Simple agents** - Process messages and return responses (text or structured data)
 - **Tool-based agents** - Use LLM with function tools for complex operations
 - **Orchestrator agents** - Coordinate multiple agents to complete tasks
+
+## Orchestrator Communication Patterns
+
+### Core Principle: Orchestrators as Message Relays
+
+Orchestrators serve as the **central communication hub** between subagents and users. They MUST:
+
+1. **Retransmit All Updates**: Every status update from subagents must be forwarded to the user
+2. **Handle Two Response Types**:
+   - **Artifacts**: Complete, actionable outputs (continue processing)
+   - **Messages**: Requests requiring user interaction (pause for feedback)
+
+### Implementing Update Retransmission
+
+```python
+class OrchestratorAgent(A2AAgent):
+    async def execute(self, context: RequestContext, event_queue: EventQueue):
+        """Execute with proper update retransmission."""
+        task = context.current_task
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+        
+        # Call subagent
+        async with A2AClient.from_registry("subagent") as client:
+            # Stream updates from subagent
+            async for update in client.stream_task(task_id):
+                # CRITICAL: Retransmit every update to user
+                await updater.update_status(
+                    TaskState.working,
+                    update.message  # Forward subagent's message
+                )
+                
+                # Process based on response type
+                if self.is_artifact(update):
+                    # Continue with next step
+                    result = await self.process_artifact(update)
+                elif self.is_message(update):
+                    # Request user feedback
+                    await updater.update_status(
+                        TaskState.working,
+                        new_agent_text_message("User input needed: " + update.text)
+                    )
+                    # Wait for user response before continuing
+                    return
+```
+
+### Artifact vs Message Distinction
+
+```python
+def is_artifact(self, response) -> bool:
+    """Determine if response is a complete artifact."""
+    # Artifacts have structured data or formatted output
+    for part in response.get("parts", []):
+        if part.get("kind") == "data":
+            return True
+        if part.get("kind") == "text":
+            # Check if it's formatted output (not a question)
+            text = part.get("text", "")
+            if not text.endswith("?") and not "please" in text.lower():
+                return True
+    return False
+
+def is_message(self, response) -> bool:
+    """Determine if response needs user feedback."""
+    # Messages are typically questions or requests
+    for part in response.get("parts", []):
+        if part.get("kind") == "text":
+            text = part.get("text", "")
+            if "?" in text or any(word in text.lower() for word in 
+                                  ["please", "could you", "would you", "need"]):
+                return True
+    return False
+```
+
+### User Feedback Flow
+
+When a subagent sends a **message** (not an artifact), the orchestrator must:
+
+1. **Pause the pipeline**
+2. **Forward the message to the user**
+3. **Wait for user response**
+4. **Continue with feedback**
+
+```python
+async def handle_user_feedback_request(self, message, updater):
+    """Handle requests for user feedback."""
+    # 1. Notify user that input is needed
+    await updater.update_status(
+        TaskState.working,
+        create_agent_message({
+            "type": "user_input_required",
+            "prompt": message,
+            "context": "Subagent needs clarification"
+        })
+    )
+    
+    # 2. Store state for resumption
+    self.pending_feedback = {
+        "subagent": self.current_subagent,
+        "context": self.current_context
+    }
+    
+    # 3. Return control to user
+    # (Next message from user will contain feedback)
+```
+
+### Best Practices for Orchestrators
+
+1. **Always Forward Updates**: Never suppress subagent status updates
+2. **Distinguish Response Types**: Clearly identify artifacts vs messages
+3. **Handle Feedback Gracefully**: Provide clear prompts when user input is needed
+4. **Maintain Context**: Track which subagent requested feedback
+5. **Stream When Possible**: Use streaming for real-time update visibility
 
 ## Prerequisites
 
@@ -94,10 +282,14 @@ class MySimpleAgent(A2AAgent):
         return "Detailed description of what your agent does"
     
     async def process_message(self, message: str) -> Union[str, Dict, List]:
-        """Process the message and return a response.
+        """Process the message and return output for an Artifact.
+        
         Returns:
-        - str: Will be wrapped in TextPart
-        - dict/list: Will be wrapped in DataPart (for structured data)
+        - str: Will be wrapped in TextPart within an Artifact
+        - dict/list: Will be wrapped in DataPart within an Artifact
+        
+        Note: The output is automatically wrapped in an Artifact by base.py,
+        not a Message, since agents produce outputs, not conversations.
         """
         # Your logic here
         return f"Processed: {message}"  # TextPart
@@ -263,17 +455,18 @@ message = create_agent_message(
    - Error messages for human consumption
    - Status updates in natural language
 
-### Returning Structured Data
+### Returning Structured Data (as Artifacts)
 ```python
 async def process_message(self, message: str) -> Union[str, Dict, List]:
-    # Return dict/list for DataPart (automatic)
+    # Return dict/list - wrapped in DataPart within an Artifact
     return {
         "matches": ["item1", "item2"],
         "count": 2,
         "metadata": {"source": "agent"}
     }
+    # This becomes: Artifact with DataPart containing the dict
     
-    # Return string for TextPart (automatic)
+    # Return string - wrapped in TextPart within an Artifact
     # return "This is a text response"
 ```
 
@@ -594,19 +787,37 @@ HU_APP_URL=https://apps.healthuniverse.com/xxx-xxx-xxx
 
 ### For Inter-Agent Communication
 
-#### Text-Based Communication
-**[A2A Spec §7.1]** Using the message/send method:
+#### Unified Agent Communication
+**[A2A Spec §7.1]** The `call_agent()` method handles all types of agent communication:
 
 ```python
-# Simple text message via message/send [§7.1]
-response = await self.call_other_agent(
-    "agent-name",  # From config/agents.json [§5.2 Discovery]
-    "Message to send"  # Will be wrapped in TextPart [§6.5.1]
+# Text message - automatically wrapped in TextPart
+response = await self.call_agent(
+    "http://agent-url",  # Or use from config/agents.json
+    "Analyze this text"  # String → TextPart
+)
+
+# Structured data - automatically wrapped in DataPart
+response = await self.call_agent(
+    "http://agent-url",
+    {"sample_id": 123, "type": "blood"}  # Dict → DataPart
+)
+
+# Pre-formatted Message with multiple parts
+response = await self.call_agent(
+    "http://agent-url",
+    {
+        "role": "user",
+        "parts": [
+            {"kind": "text", "text": "Analyze:"},
+            {"kind": "data", "data": {"values": [1, 2, 3]}}
+        ]
+    }
 )
 ```
 
-#### Structured Data Communication (Recommended)
-**[A2A Spec §7.1 & §6.5.3]** Send structured data using DataPart:
+#### Understanding the Response
+**[A2A Spec §6.7]** Agents return Artifacts (not Messages):
 
 ```python
 from utils.message_utils import create_agent_message
@@ -621,17 +832,18 @@ message = create_agent_message({
 # Send using A2A client
 from utils.a2a_client import A2AClient
 client = A2AClient.from_registry("agent-name")
-response = await client.send_message(message, timeout_sec=30)
-await client.close()
-```
 
-#### Using A2A Client for Structured Data
-```python
-# Send structured data directly
-response = await client.send_data({
-    "key": "value",
-    "nested": {"data": "here"}
-}, timeout_sec=30)
+# Send a properly formatted Message
+response = await client.send_message(message, timeout_sec=30)
+
+# Or send an Artifact (for outputs)
+artifact = {
+    "artifactId": "result-123",
+    "parts": [{"kind": "data", "data": {"key": "value"}}]
+}
+response = await client.send_artifact(artifact, timeout_sec=30)
+
+await client.close()
 ```
 
 Configure known agents in `config/agents.json`:
@@ -723,6 +935,135 @@ def analyze_data(data: str, criteria: List[str]) -> str:
     return analysis_results
 ```
 
+## Structured Outputs with Pydantic
+
+When agents need to return structured data, Pydantic models provide validation, type safety, and clear contracts. Each agent handles its own data formatting - there's no automatic conversion in base.py.
+
+### Defining Output Schemas
+
+```python
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any
+
+class AnalysisResult(BaseModel):
+    """Define your agent's output structure."""
+    summary: str = Field(description="Brief summary of findings")
+    confidence: float = Field(ge=0, le=1, description="Confidence score 0-1")
+    findings: List[str] = Field(description="Key findings list")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+```
+
+### Approach 1: Manual Creation
+
+When you control the data directly:
+
+```python
+async def process_message(self, message: str) -> Dict[str, Any]:
+    """Process and return structured data."""
+    
+    # Your processing logic
+    word_count = len(message.split())
+    
+    # Create validated Pydantic model
+    result = AnalysisResult(
+        summary=f"Analyzed {word_count} words",
+        confidence=0.95,
+        findings=["finding1", "finding2"],
+        metadata={"timestamp": time.time()}
+    )
+    
+    # IMPORTANT: Return as dict for DataPart (A2A requirement)
+    return result.model_dump()
+```
+
+### Approach 2: LLM-Generated with Validation
+
+When using LLM to generate structured output:
+
+```python
+async def process_message(self, message: str) -> Dict[str, Any]:
+    """Use LLM to generate structured output."""
+    
+    # Get JSON schema for LLM
+    schema = AnalysisResult.model_json_schema()
+    
+    prompt = f"""
+    Analyze this and return JSON matching the schema:
+    Schema: {json.dumps(schema, indent=2)}
+    Text: {message}
+    Return ONLY valid JSON.
+    """
+    
+    # Use Google ADK via llm_utils
+    from utils.llm_utils import generate_text
+    llm_response = await generate_text(
+        prompt=prompt,
+        system_instruction="Return only valid JSON",
+        temperature=0.1,  # Low for consistency
+        max_tokens=500
+    )
+    
+    # Validate and return
+    try:
+        result = AnalysisResult.model_validate_json(llm_response)
+        return result.model_dump()
+    except ValidationError as e:
+        logger.error(f"Invalid LLM output: {e}")
+        return {"error": "Invalid structure", "details": e.errors()}
+```
+
+### Why `.model_dump()` is Required
+
+The A2A specification (§6.5.3) requires DataPart.data to be a dictionary:
+
+```typescript
+export interface DataPart {
+    readonly kind: "data";
+    data: { [key: string]: any };  // Must be a dict
+}
+```
+
+Since Pydantic models are Python objects (not dicts), we must:
+- Use `.model_dump()` to convert to dict for DataPart
+- This is explicit - each agent handles its own formatting
+- No hidden magic in base.py
+
+### Pydantic in Orchestrators
+
+For orchestrators coordinating multiple agents:
+
+```python
+from pydantic import BaseModel
+from typing import Literal
+
+class ExecutionPlan(BaseModel):
+    strategy: Literal["sequential", "parallel"]
+    steps: List[Dict[str, Any]]
+    
+class CoordinationResult(BaseModel):
+    plan: ExecutionPlan
+    agent_results: Dict[str, Any]
+    status: Literal["completed", "partial", "failed"]
+
+# In orchestration tools
+def plan_execution(...) -> str:
+    plan = ExecutionPlan(strategy="sequential", steps=[...])
+    return plan.model_dump_json()  # Tools return JSON strings
+
+# In process_message
+async def process_message(self, message: str) -> Dict[str, Any]:
+    result = CoordinationResult(...)
+    return result.model_dump()  # Return dict for DataPart
+```
+
+### Best Practices
+
+1. **Define Clear Schemas**: Use Pydantic models for all structured outputs
+2. **Validate Everything**: Even LLM outputs need validation
+3. **Handle Errors**: Always catch ValidationError
+4. **Document Fields**: Use Field descriptions
+5. **Stay Within ADK**: Use `utils.llm_utils` for LLM calls
+
 ## Streaming Support
 
 ### Enabling Streaming
@@ -811,12 +1152,23 @@ async def execute(self, context: RequestContext, event_queue: EventQueue) -> Non
 
 ### Inter-Agent Communication
 
-Agents can call other agents using the `call_other_agent` method:
+Agents can call other agents using the unified `call_agent` method:
 
 ```python
-async def process_message(self, message: str) -> str:
-    # Call another agent
-    response = await self.call_other_agent("agent_name", "message")
+async def process_message(self, message: str) -> Union[str, Dict, List]:
+    # Call another agent with text
+    response = await self.call_agent(
+        "http://agent-url",  # Or use agent name from config
+        "analyze this message"
+    )
+    
+    # Call with structured data
+    response = await self.call_agent(
+        "http://agent-url",
+        {"sample": message, "format": "json"}
+    )
+    
+    # Response is an Artifact containing the agent's output
     return response
 ```
 
@@ -926,6 +1278,70 @@ return json.dumps({"keywords": [...]})
 ```
 
 ## Troubleshooting
+
+### Issue: "Message must have 'parts' array" error
+**Cause**: Trying to send improperly formatted message
+**Solution**: Ensure Message has correct structure:
+```python
+# Correct Message format
+message = {
+    "role": "user",
+    "parts": [{"kind": "text", "text": "content"}]
+}
+# Or use call_agent() which handles wrapping
+await self.call_agent("url", "text")  # Auto-wraps
+```
+
+### Issue: "Artifact must have 'artifactId'" error  
+**Cause**: Trying to send Artifact without required fields
+**Solution**: Include all required Artifact fields:
+```python
+artifact = {
+    "artifactId": "unique-id",
+    "parts": [{"kind": "data", "data": {...}}]
+}
+```
+
+### Issue: Agent returns Message instead of Artifact
+**Cause**: Manually creating Messages in process_message()
+**Solution**: Just return the output data - base.py wraps it:
+```python
+async def process_message(self, message: str):
+    # Just return output - becomes Artifact automatically
+    return {"result": "data"}  # ✓ Wrapped as Artifact
+    # NOT: return Message(...)  # ✗ Wrong
+```
+
+### Issue: "Object of type MyModel is not JSON serializable"
+**Cause**: Returning Pydantic model directly instead of dict
+**Solution**: Use `.model_dump()` to convert to dict:
+```python
+result = MyModel(field1="value")
+return result.model_dump()  # ✓ Returns dict
+# NOT: return result  # ✗ Returns Pydantic object
+```
+
+### Issue: LLM returns invalid JSON for Pydantic schema
+**Cause**: LLM hallucinating or not following schema
+**Solution**: Lower temperature and validate:
+```python
+try:
+    result = MyModel.model_validate_json(llm_output)
+    return result.model_dump()
+except ValidationError as e:
+    # Fallback or retry
+    return {"error": "Invalid LLM output", "details": e.errors()}
+```
+
+### Issue: "ValidationError: field required"
+**Cause**: Missing required fields in Pydantic model
+**Solution**: Either provide all required fields or make them optional:
+```python
+class MyModel(BaseModel):
+    required_field: str
+    optional_field: Optional[str] = None
+    with_default: str = "default_value"
+```
 
 ### Issue: "No LLM API key found"
 **Authentication Required [A2A Spec §4]**
@@ -1063,15 +1479,21 @@ from utils.a2a_client import A2AClient
 
 # Create client
 client = A2AClient.from_registry("agent-name")
+# Or: client = A2AClient("http://agent-url")
 
-# Send text
-await client.send_text("message")
+# Send a Message (for requests)
+message = {
+    "role": "user",
+    "parts": [{"kind": "text", "text": "Analyze this"}]
+}
+await client.send_message(message, timeout_sec=30)
 
-# Send data
-await client.send_data({"key": "value"})
-
-# Send message
-await client.send_message(message)
+# Send an Artifact (for outputs)
+artifact = {
+    "artifactId": "output-123",
+    "parts": [{"kind": "data", "data": {"result": "positive"}}]
+}
+await client.send_artifact(artifact, timeout_sec=30)
 
 # Clean up
 await client.close()
@@ -1121,6 +1543,172 @@ await client.close()
 | tasks/list | ListTask | GET /v1/tasks | Optional |
 | tasks/resubscribe | TaskSubscription | POST /v1/tasks/{id}:subscribe | Optional |
 
+## Production Deployment Lessons Learned
+
+### Health Universe Deployment Patterns
+
+#### Private vs Public Apps
+**Key Discovery**: Health Universe apps can be deployed as private or public, with different authentication requirements:
+
+- **Private Apps**: Require proper authentication tokens and may return 403 Forbidden without credentials
+- **Public Apps**: Accessible without authentication, ideal for testing and public APIs
+- **Solution**: Make apps public during development/testing, or ensure proper authentication setup for private apps
+
+#### Transport Protocol Discovery  
+**Problem**: Assuming REST endpoints work when agents actually expect JSON-RPC.
+
+**Solution Process**:
+1. **Check Agent Card**: `curl https://your-agent/.well-known/agent-card.json`
+2. **Verify Transport**: Look for `preferredTransport` and `additionalInterfaces`
+3. **Test Endpoint**: Use correct format (JSON-RPC envelope vs direct params)
+
+```bash
+# Health Universe agents typically use JSON-RPC on root endpoint:
+curl -X POST https://your-agent/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"message/send","params":{...},"id":1}'
+
+# NOT REST endpoints:
+# ❌ curl -X POST https://your-agent/v1/message:send (often returns 404)
+```
+
+#### Error Progression Analysis
+Understanding error patterns helps debugging:
+
+1. **403 Forbidden** → Authentication/privacy issue
+2. **404 Not Found** → Wrong endpoint path  
+3. **Success** → Correct authentication + endpoint
+
+### Production Troubleshooting Checklist
+
+When deploying agents to production platforms:
+
+- [ ] **Verify App Visibility**: Check if app is public/private in platform settings
+- [ ] **Test Agent Card**: Ensure `/.well-known/agent-card.json` is accessible
+- [ ] **Validate Transport**: Confirm JSON-RPC vs REST based on agent card
+- [ ] **Test Simple Request**: Use curl to verify basic connectivity
+- [ ] **Check Authentication**: Ensure proper tokens for private apps
+- [ ] **Use Diagnostic Tools**: Run provided test scripts for systematic debugging
+
+### Common Development Pitfalls
+
+#### LLM Integration Issues
+
+**F-String + JSON Formatting Conflict**
+```python
+# ❌ WRONG - f-string interprets { } as format specifiers
+prompt = f"""Generate JSON:
+{
+    "patterns": ["\d+"]  # Error: Invalid format specifier
+}"""
+
+# ✅ CORRECT - Escape braces with {{ }}
+prompt = f"""Generate JSON:
+{{
+    "patterns": ["\\\\d+"]  # Also note double escaping for JSON
+}}
+Preview: {document_preview}"""  # f-string substitution still works
+```
+
+**JSON Regex Escaping**
+```python
+# ❌ WRONG - Breaks JSON parsing
+{"patterns": ["\d+", "\w+"]}
+
+# ✅ CORRECT - Double escape for JSON
+{"patterns": ["\\\\d+", "\\\\w+"]}
+```
+
+**Token Limits and Truncation**
+```python
+# ❌ RISKY - May truncate response
+await generate_text(prompt, max_tokens=500)
+
+# ✅ SAFE - Generous limit for structured output
+await generate_text(prompt, max_tokens=3000, temperature=0.3)
+```
+
+#### Pydantic Models and DataPart
+
+**DataPart Requires Dictionaries**
+```python
+# ❌ WRONG - DataPart can't accept Pydantic models directly
+from pydantic import BaseModel
+
+class MyResult(BaseModel):
+    status: str
+    data: dict
+
+result = MyResult(status="ok", data={})
+return result  # Error: DataPart.data must be dict
+
+# ✅ CORRECT - Use .model_dump() to convert
+return result.model_dump()  # Returns dict for DataPart
+```
+
+#### Artifact Extraction
+
+**Always Extract from Artifact Structure**
+```python
+# ❌ WRONG - Direct access fails
+response = await self.call_agent("other", message)
+data = response["data"]  # KeyError!
+
+# ✅ CORRECT - Extract from artifact first
+def _extract_from_artifact(self, response):
+    if isinstance(response, dict) and "parts" in response:
+        for part in response["parts"]:
+            if part.get("kind") == "data":
+                return part.get("data")
+            elif part.get("kind") == "text":
+                return part.get("text")
+    return response
+
+data = self._extract_from_artifact(response)
+```
+
+#### Orchestrator Tool Execution
+
+**Direct process_message May Skip Tools**
+```python
+# ❌ WRONG - Tools not invoked
+orchestrator = MyOrchestrator()
+result = await orchestrator.process_message(message)
+
+# ✅ CORRECT - Call execution method directly
+async def process_message(self, message: str):
+    return await self.execute_pipeline(message)
+```
+
+### Debugging Tools
+
+The template includes diagnostic utilities:
+
+```python
+# Test agent accessibility and endpoints
+python test_health_universe_auth.py
+
+# Validate specific fixes
+python test_lab_pipeline_fix.py
+
+# Test pipeline locally
+python examples/pipeline/run_pipeline_local.py
+```
+
+### Platform-Specific Considerations
+
+#### Health Universe
+- **Endpoint Pattern**: Usually JSON-RPC on root endpoint `/`
+- **Authentication**: Bearer tokens for private apps
+- **Headers**: Include proper `User-Agent` and `Accept` headers
+- **Transport**: Declare `HTTP` as preferred transport in agent card
+
+#### General Platforms
+- **Always test agent card accessibility first**
+- **Verify transport protocol requirements**  
+- **Check authentication requirements for private deployments**
+- **Use platform-specific headers and authentication patterns**
+
 ---
 
-**Remember**: The base handles all A2A complexity. Focus on your agent's unique functionality! Always use the correct Part types for A2A compliance. Refer to the [A2A Specification](./A2A_SPECIFICATION.md) for authoritative requirements.
+**Remember**: The base handles all A2A complexity. Focus on your agent's unique functionality! Always use the correct Part types for A2A compliance. Test locally before platform deployment. Refer to the [A2A Specification](./A2A_SPECIFICATION.md) for authoritative requirements.

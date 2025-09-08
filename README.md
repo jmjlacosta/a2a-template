@@ -2,6 +2,32 @@
 
 A production-ready template for building Agent-to-Agent (A2A) protocol compliant agents that can be deployed on HealthUniverse or run locally.
 
+## 🚨 Critical: Orchestrator Communication Requirements
+
+### Orchestrators MUST Retransmit Subagent Updates
+
+When building orchestrator agents that coordinate multiple subagents:
+
+1. **Forward ALL updates** from subagents to the user (never suppress status updates)
+2. **Handle two response types**:
+   - **Artifacts** (DataPart/TextPart): Complete outputs → continue processing
+   - **Messages** (free text): User feedback requests → pause for input
+
+```python
+# Orchestrator must relay all subagent updates
+async for update in subagent.stream_updates():
+    # CRITICAL: Forward to user
+    await send_to_user(update)
+    
+    if is_artifact(update):
+        # Process and continue pipeline
+        await next_agent.process(update)
+    elif is_message(update):
+        # Pause for user feedback
+        user_response = await get_user_feedback(update)
+        await continue_with_feedback(user_response)
+```
+
 ## 🚀 Quick Start
 
 ```bash
@@ -21,6 +47,7 @@ python test_compliance.py
 ## 📚 Table of Contents
 
 - [Architecture Overview](#architecture-overview)
+- [Orchestrator Patterns](#orchestrator-patterns)
 - [Building Your First Agent](#building-your-first-agent)
 - [LLM Integration](#llm-integration)
 - [Deployment](#deployment)
@@ -51,6 +78,91 @@ Automatic A2A Compliance (AgentCard, endpoints, validation)
     ↓
 Deploy to HealthUniverse or run locally
 ```
+
+## Orchestrator Patterns
+
+### Understanding Artifacts vs Messages
+
+Orchestrators handle two distinct types of subagent responses:
+
+| Response Type | Description | Example | Action |
+|--------------|-------------|---------|--------|
+| **Artifact** | Complete, processable output | DataPart with results, formatted TextPart | Continue pipeline |
+| **Message** | Request for user interaction | "What format would you prefer?" | Pause for feedback |
+
+### Implementing an Orchestrator
+
+```python
+from base import A2AAgent
+from utils.a2a_client import A2AClient
+from utils.message_utils import create_agent_message, new_agent_text_message
+
+class OrchestratorAgent(A2AAgent):
+    """Orchestrator that coordinates multiple subagents."""
+    
+    async def execute(self, context, event_queue):
+        """Execute with proper update forwarding."""
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+        
+        # Phase 1: Call first subagent
+        await updater.update_status(
+            TaskState.working,
+            new_agent_text_message("Processing with Agent 1...")
+        )
+        
+        async with A2AClient.from_registry("agent1") as client:
+            response = await client.send_message(message)
+            
+            # CRITICAL: Forward subagent's response to user
+            await updater.update_status(
+                TaskState.working,
+                response  # Relay the actual subagent message
+            )
+            
+            # Check response type
+            if self.needs_user_feedback(response):
+                # Message type - request user input
+                await updater.update_status(
+                    TaskState.working,
+                    new_agent_text_message("Please provide the requested information")
+                )
+                return  # Pause execution for user response
+            
+            # Artifact type - continue with pipeline
+            # Phase 2: Process with next agent
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Processing with Agent 2...")
+            )
+            
+            async with A2AClient.from_registry("agent2") as client2:
+                final_result = await client2.send_data(response)
+                
+                # Forward final result
+                await updater.update_status(
+                    TaskState.working,
+                    create_agent_message(final_result)
+                )
+        
+        await updater.complete()
+    
+    def needs_user_feedback(self, response):
+        """Determine if response is a message needing feedback."""
+        for part in response.get("parts", []):
+            if part.get("kind") == "text":
+                text = part.get("text", "")
+                # Simple heuristic - improve based on your needs
+                if "?" in text or "please" in text.lower():
+                    return True
+        return False
+```
+
+### Key Orchestrator Principles
+
+1. **Transparency**: Users see all subagent activity through forwarded updates
+2. **Responsiveness**: Messages trigger immediate user interaction
+3. **Continuity**: Artifacts flow smoothly through the pipeline
+4. **Context Preservation**: Maintain state when pausing for feedback
 
 ## Building Your First Agent
 

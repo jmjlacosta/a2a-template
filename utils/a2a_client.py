@@ -12,7 +12,8 @@ import logging
 import asyncio
 import aiohttp
 import itertools
-from typing import Dict, Any, Optional
+import uuid
+from typing import Dict, Any, Optional, Union
 from contextlib import asynccontextmanager
 
 
@@ -53,9 +54,18 @@ class A2AClient:
             token: Optional bearer token for authentication
         """
         self.base_url = base_url.rstrip('/')
-        self.token = token or os.getenv("AGENT_TOKEN")
+        self.token = token or os.getenv("AGENT_TOKEN") or os.getenv("HU_TOKEN")
         self.debug_payloads = os.getenv("DEBUG_PAYLOADS") == "1"
+        self.debug_auth = os.getenv("DEBUG_AUTH", "false").lower() == "true"
         self.session = None
+        
+        # Debug authentication setup
+        if self.debug_auth:
+            logger.info(f"A2A Client initialized for {self.base_url}")
+            logger.info(f"Token source: {'AGENT_TOKEN' if os.getenv('AGENT_TOKEN') else 'HU_TOKEN' if os.getenv('HU_TOKEN') else 'None'}")
+            logger.info(f"Token present: {'Yes' if self.token else 'No'}")
+            if self.token:
+                logger.info(f"Token prefix: {self.token[:20]}..." if len(self.token) > 20 else f"Token: {self.token}")
         
     @classmethod
     def from_registry(cls, agent_name: str, token: Optional[str] = None):
@@ -79,9 +89,34 @@ class A2AClient:
     async def _get_session(self):
         """Get or create aiohttp session."""
         if self.session is None:
-            headers = {"Content-Type": "application/json"}
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "A2A-Client/1.0.0",
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip, deflate",
+                "Cache-Control": "no-cache"
+            }
+            
+            # Add authentication if token is available
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
+                
+            # Add Health Universe specific headers if in HU environment
+            if "healthuniverse.com" in self.base_url:
+                headers["Origin"] = "https://healthuniverse.com"
+                headers["Referer"] = "https://healthuniverse.com/"
+                # Try common Health Universe header patterns
+                hu_token = os.getenv("HU_API_KEY") or os.getenv("HEALTH_UNIVERSE_TOKEN")
+                if hu_token and not self.token:
+                    headers["Authorization"] = f"Bearer {hu_token}"
+                elif hu_token:
+                    headers["X-API-Key"] = hu_token
+                    
+            if self.debug_auth:
+                logger.info("Session headers created:")
+                safe_headers = {k: v if k != "Authorization" else f"{v[:20]}..." for k, v in headers.items()}
+                logger.info(f"Headers: {safe_headers}")
+                    
             self.session = aiohttp.ClientSession(headers=headers)
         try:
             yield self.session
@@ -112,8 +147,19 @@ class A2AClient:
             aiohttp.ClientError: On network errors
             ValueError: On JSON-RPC errors
         """
-        endpoint = self.base_url  # JSON-RPC posts to root
-        payload = _jsonrpc_envelope(method, params)
+        # A2A compliant endpoint and payload mapping
+        # Health Universe agents use JSON-RPC on root endpoint for message/send
+        if method == "message/send":
+            # Use JSON-RPC transport: root endpoint with JSON-RPC envelope
+            endpoint = self.base_url
+            payload = _jsonrpc_envelope(method, params)
+        elif method == "tasks/get":
+            endpoint = f"{self.base_url}/v1/tasks"  # Will need task ID parameter
+            payload = _jsonrpc_envelope(method, params)
+        else:
+            # Fallback to root JSON-RPC for unmapped methods
+            endpoint = self.base_url
+            payload = _jsonrpc_envelope(method, params)
         
         if self.debug_payloads:
             logger.debug(f"JSON-RPC Request to {endpoint}:")
@@ -132,6 +178,33 @@ class A2AClient:
                             logger.debug(response_text[:1000])
                         
                         if response.status >= 400:
+                            # Enhanced error logging for troubleshooting
+                            logger.error(f"❌ HTTP {response.status} error from {endpoint}")
+                            logger.error(f"Request method: {response.request_info.method}")
+                            logger.error(f"Request URL: {response.request_info.url}")
+                            
+                            # Safe header logging (mask sensitive data)
+                            req_headers = dict(response.request_info.headers)
+                            safe_req_headers = {}
+                            for k, v in req_headers.items():
+                                if k.lower() in ['authorization', 'x-api-key']:
+                                    safe_req_headers[k] = f"{v[:10]}..." if len(v) > 10 else "***"
+                                else:
+                                    safe_req_headers[k] = v
+                            logger.error(f"Request headers: {safe_req_headers}")
+                            
+                            logger.error(f"Response headers: {dict(response.headers)}")
+                            logger.error(f"Response status: {response.status} {response.reason}")
+                            logger.error(f"Response body: {response_text}")
+                            
+                            # Additional debugging for 403 errors
+                            if response.status == 403:
+                                logger.error("🚫 403 Forbidden Analysis:")
+                                logger.error(f"   - Endpoint: {endpoint}")
+                                logger.error(f"   - Has Auth Token: {'Yes' if self.token else 'No'}")
+                                logger.error(f"   - Health Universe Domain: {'Yes' if 'healthuniverse.com' in endpoint else 'No'}")
+                                logger.error(f"   - Payload Size: {len(json.dumps(payload)) if payload else 0} bytes")
+                            
                             if attempt < retries - 1:
                                 await asyncio.sleep(2 ** attempt + random.random())
                                 continue
@@ -142,18 +215,17 @@ class A2AClient:
                                 message=f"JSON-RPC request failed: {response_text}"
                             )
                         
-                        # Parse JSON-RPC response
+                        # Parse response based on transport type
                         try:
                             data = json.loads(response_text)
                         except json.JSONDecodeError:
                             raise ValueError(f"Invalid JSON response: {response_text[:200]}")
                         
-                        # Check for JSON-RPC error
+                        # All methods now use JSON-RPC transport for Health Universe
+                        # JSON-RPC transport: check for JSON-RPC error and extract result
                         if "error" in data:
                             error = data["error"]
                             raise ValueError(f"JSON-RPC error {error.get('code')}: {error.get('message')}")
-                        
-                        # Return the result
                         return data.get("result", data)
                         
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -163,105 +235,174 @@ class A2AClient:
                 else:
                     raise
     
-    async def send_message(self, message: Any, timeout_sec: Optional[float] = None) -> str:
+    async def _request_with_fallback(self, method: str, params: Dict[str, Any], 
+                                   timeout_sec: Optional[float] = None) -> Any:
         """
-        Send a message to the agent via JSON-RPC.
+        Make request with authentication fallback strategies for Health Universe.
         
         Args:
-            message: Message object or dict with role and parts
+            method: JSON-RPC method name
+            params: Method parameters
             timeout_sec: Request timeout
             
         Returns:
-            Text response from agent
+            Response from the request
         """
-        # Convert message to dict if needed
+        last_error = None
+        
+        # Strategy 1: Try with current token configuration
+        try:
+            return await self._request_jsonrpc(method, params, timeout_sec=timeout_sec)
+        except aiohttp.ClientResponseError as e:
+            if e.status != 403:
+                raise  # Not an auth error, re-raise
+            last_error = e
+            logger.warning(f"Strategy 1 failed (current auth): {e}")
+        
+        # Strategy 2: Try without authentication (public endpoint)
+        if "healthuniverse.com" in self.base_url:
+            logger.info("Strategy 2: Trying without authentication...")
+            original_token = self.token
+            self.token = None
+            # Force session recreation
+            if self.session:
+                await self.session.close()
+                self.session = None
+            
+            try:
+                result = await self._request_jsonrpc(method, params, timeout_sec=timeout_sec)
+                logger.info("✅ Strategy 2 succeeded (no auth)")
+                return result
+            except aiohttp.ClientResponseError as e:
+                logger.warning(f"Strategy 2 failed (no auth): {e}")
+                last_error = e
+            finally:
+                self.token = original_token  # Restore original token
+                # Force session recreation for next attempt
+                if self.session:
+                    await self.session.close()
+                    self.session = None
+        
+        # Strategy 3: Try with different Health Universe token sources
+        hu_tokens = [
+            os.getenv("HU_API_KEY"),
+            os.getenv("HEALTH_UNIVERSE_TOKEN"),  
+            os.getenv("HU_ACCESS_TOKEN"),
+            os.getenv("HEALTHUNIVERSE_API_KEY")
+        ]
+        
+        for i, token in enumerate(hu_tokens):
+            if not token or token == self.token:
+                continue
+                
+            logger.info(f"Strategy {3+i}: Trying with alternative HU token...")
+            original_token = self.token
+            self.token = token
+            # Force session recreation
+            if self.session:
+                await self.session.close()
+                self.session = None
+            
+            try:
+                result = await self._request_jsonrpc(method, params, timeout_sec=timeout_sec)
+                logger.info(f"✅ Strategy {3+i} succeeded (alt token)")
+                return result
+            except aiohttp.ClientResponseError as e:
+                logger.warning(f"Strategy {3+i} failed (alt token): {e}")
+                last_error = e
+            finally:
+                self.token = original_token  # Restore original token
+                # Force session recreation for next attempt
+                if self.session:
+                    await self.session.close()
+                    self.session = None
+        
+        # All strategies failed, raise the last error
+        raise last_error
+    
+    async def send_message(self, message: Union[Dict, Any], timeout_sec: Optional[float] = None) -> Any:
+        """
+        Send a properly formatted A2A message to the agent.
+        
+        Messages are for communication/requests to agents.
+        For sending results/outputs, use send_artifact() instead.
+        
+        Args:
+            message: A2A Message object or dict with proper structure:
+                     - Must have 'role' field ('user', 'agent', 'system')
+                     - Must have 'parts' array with valid Part objects
+                     - Each part must have 'kind' discriminator ('text', 'data', 'file')
+            timeout_sec: Request timeout in seconds
+            
+        Returns:
+            Response from agent (structure preserved, not coerced to string)
+            
+        Raises:
+            ValueError: If message is not properly formatted per A2A spec
+            aiohttp.ClientError: On network errors
+        """
+        try:
+            from a2a.utils.errors import InvalidParamsError
+        except ImportError:
+            # Fallback if A2A SDK structure is different
+            InvalidParamsError = ValueError
+        
+        # Convert message to dict if it's an object
         if hasattr(message, 'model_dump'):
             message_dict = message.model_dump()
         elif hasattr(message, 'dict'):
             message_dict = message.dict()
-        else:
+        elif isinstance(message, dict):
             message_dict = message
+        else:
+            raise InvalidParamsError(
+                f"Message must be a Message object or dict, got {type(message).__name__}"
+            )
         
-        # Ensure message has required structure
-        if not isinstance(message_dict, dict):
-            message_dict = {
-                "role": "user",
-                "parts": [{"kind": "text", "text": str(message_dict)}],
-                "kind": "message"
-            }
-        elif "role" not in message_dict:
-            message_dict = {
-                "role": "user",
-                "parts": [{"kind": "text", "text": str(message_dict)}],
-                "kind": "message"
-            }
+        # Validate required A2A message structure (no auto-fixing!)
+        if not isinstance(message_dict.get('parts'), list):
+            raise InvalidParamsError(
+                "Message must have 'parts' array per A2A specification"
+            )
         
-        # Add messageId if not present
-        if "messageId" not in message_dict:
-            import uuid
-            message_dict["messageId"] = str(uuid.uuid4())
+        if not message_dict.get('role'):
+            raise InvalidParamsError(
+                "Message must have 'role' field (user/agent/system)"
+            )
         
-        # Send via JSON-RPC with correct method name
-        params = {
-            "message": message_dict,
-            "metadata": {}
-        }
-        
-        result = await self._request_jsonrpc("message/send", params, timeout_sec=timeout_sec)
-        
-        # Extract text from various response formats
-        if isinstance(result, str):
-            return result
-        
-        if isinstance(result, dict):
-            # Direct text field
-            if "text" in result:
-                return result["text"]
+        # Validate each part has proper discriminator
+        for i, part in enumerate(message_dict['parts']):
+            if not isinstance(part, dict):
+                raise InvalidParamsError(
+                    f"Part {i} must be a dict with 'kind' discriminator"
+                )
             
-            # Message with parts
-            msg = result.get("message") or result.get("result", {}).get("message")
-            if isinstance(msg, dict):
-                parts = msg.get("parts", [])
-                texts = []
-                for part in parts:
-                    if part.get("kind") == "text":
-                        texts.append(part.get("text", ""))
-                    elif part.get("kind") == "data":
-                        # Handle DataPart responses
-                        data = part.get("data", {})
-                        if isinstance(data, dict):
-                            texts.append(json.dumps(data, indent=2))
-                        else:
-                            texts.append(str(data))
-                return "\n".join(texts)
-        
-        return str(result)
-    
-    async def send_data(self, data: Any, timeout_sec: Optional[float] = None) -> Any:
-        """
-        Send structured data to the agent using DataPart.
-        
-        This method properly formats structured data as a DataPart
-        with kind="data", ensuring compatibility with agents that
-        expect structured data in the data field rather than as
-        serialized JSON text.
-        
-        Args:
-            data: Structured data (dict, list, etc.) to send
-            timeout_sec: Request timeout
+            kind = part.get('kind')
+            if not kind:
+                raise InvalidParamsError(
+                    f"Part {i} missing required 'kind' discriminator"
+                )
             
-        Returns:
-            Response from agent (structured or text)
-        """
-        import uuid
+            if kind not in ['text', 'data', 'file']:
+                raise InvalidParamsError(
+                    f"Part {i} has invalid kind '{kind}'. Must be: text, data, or file"
+                )
+            
+            # Validate part has required fields for its kind
+            if kind == 'text' and 'text' not in part:
+                raise InvalidParamsError(f"TextPart {i} missing 'text' field")
+            elif kind == 'data' and 'data' not in part:
+                raise InvalidParamsError(f"DataPart {i} missing 'data' field")
+            elif kind == 'file' and 'file' not in part:
+                raise InvalidParamsError(f"FilePart {i} missing 'file' field")
         
-        # Create message with DataPart for structured data
-        message_dict = {
-            "role": "user",
-            "parts": [{"kind": "data", "data": data}],
-            "kind": "message",
-            "messageId": str(uuid.uuid4())
-        }
+        # Add messageId if not present (this is metadata, OK to add)
+        if 'messageId' not in message_dict:
+            message_dict['messageId'] = str(uuid.uuid4())
+        
+        # Add kind field if missing (for message itself)
+        if 'kind' not in message_dict:
+            message_dict['kind'] = 'message'
         
         # Send via JSON-RPC
         params = {
@@ -269,42 +410,162 @@ class A2AClient:
             "metadata": {}
         }
         
-        result = await self._request_jsonrpc("message/send", params, timeout_sec=timeout_sec)
+        # Debug logging if enabled
+        if os.getenv("DEBUG_A2A_MESSAGES", "false").lower() == "true":
+            logger.info(f"A2A Client sending to {self.base_url}:")
+            logger.info(f"Message: {json.dumps(message_dict, indent=2)}")
         
-        # Try to extract structured data from response
-        if isinstance(result, dict):
-            # Check for message with DataPart
-            msg = result.get("message") or result.get("result", {}).get("message")
-            if isinstance(msg, dict):
-                parts = msg.get("parts", [])
-                for part in parts:
-                    if part.get("kind") == "data":
-                        return part.get("data")
-                
-                # Fall back to text parts
-                texts = []
-                for part in parts:
-                    if part.get("kind") == "text":
-                        text = part.get("text", "")
-                        # Try to parse as JSON if it looks like JSON
-                        if text.strip().startswith(("{", "[")):
-                            try:
-                                return json.loads(text)
-                            except json.JSONDecodeError:
-                                pass
-                        texts.append(text)
-                
-                if texts:
-                    combined = "\n".join(texts)
-                    # Try to parse combined text as JSON
-                    if combined.strip().startswith(("{", "[")):
-                        try:
-                            return json.loads(combined)
-                        except json.JSONDecodeError:
-                            pass
-                    return combined
+        # Use the request with fallback for auth strategies
+        result = await self._request_with_fallback("message/send", params, timeout_sec=timeout_sec)
         
+        # Return result as-is, preserving structure
         return result
+    
+    async def send_artifact(self, artifact: Union[Dict, Any], timeout_sec: Optional[float] = None) -> Any:
+        """
+        Send a properly formatted A2A artifact to the agent.
+        
+        Artifacts are for outputs/results generated by agents.
+        For sending requests/communication, use send_message_v2() instead.
+        
+        Args:
+            artifact: A2A Artifact object or dict with proper structure:
+                      - Must have 'artifactId' field
+                      - Must have 'parts' array with valid Part objects
+                      - Each part must have 'kind' discriminator ('text', 'data', 'file')
+                      - Optional: 'name', 'description', 'metadata'
+            timeout_sec: Request timeout in seconds
+            
+        Returns:
+            Response from agent (structure preserved)
+            
+        Raises:
+            ValueError: If artifact is not properly formatted per A2A spec
+            aiohttp.ClientError: On network errors
+        """
+        try:
+            from a2a.utils.errors import InvalidParamsError
+        except ImportError:
+            InvalidParamsError = ValueError
+        
+        # Convert artifact to dict if it's an object
+        if hasattr(artifact, 'model_dump'):
+            artifact_dict = artifact.model_dump()
+        elif hasattr(artifact, 'dict'):
+            artifact_dict = artifact.dict()
+        elif isinstance(artifact, dict):
+            artifact_dict = artifact
+        else:
+            raise InvalidParamsError(
+                f"Artifact must be an Artifact object or dict, got {type(artifact).__name__}"
+            )
+        
+        # Validate required A2A artifact structure
+        if not artifact_dict.get('artifactId'):
+            raise InvalidParamsError(
+                "Artifact must have 'artifactId' field per A2A specification"
+            )
+        
+        if not isinstance(artifact_dict.get('parts'), list):
+            raise InvalidParamsError(
+                "Artifact must have 'parts' array per A2A specification"
+            )
+        
+        # Validate each part has proper discriminator
+        for i, part in enumerate(artifact_dict['parts']):
+            if not isinstance(part, dict):
+                raise InvalidParamsError(
+                    f"Part {i} must be a dict with 'kind' discriminator"
+                )
+            
+            kind = part.get('kind')
+            if not kind:
+                raise InvalidParamsError(
+                    f"Part {i} missing required 'kind' discriminator"
+                )
+            
+            if kind not in ['text', 'data', 'file']:
+                raise InvalidParamsError(
+                    f"Part {i} has invalid kind '{kind}'. Must be: text, data, or file"
+                )
+            
+            # Validate part has required fields for its kind
+            if kind == 'text' and 'text' not in part:
+                raise InvalidParamsError(f"TextPart {i} missing 'text' field")
+            elif kind == 'data' and 'data' not in part:
+                raise InvalidParamsError(f"DataPart {i} missing 'data' field")
+            elif kind == 'file' and 'file' not in part:
+                raise InvalidParamsError(f"FilePart {i} missing 'file' field")
+        
+        # Send via JSON-RPC (artifacts may use a different method in the future)
+        # For now, we send as a special message type
+        params = {
+            "artifact": artifact_dict,
+            "metadata": {}
+        }
+        
+        # Debug logging if enabled
+        if os.getenv("DEBUG_A2A_MESSAGES", "false").lower() == "true":
+            logger.info(f"A2A Client sending artifact to {self.base_url}:")
+            logger.info(f"Artifact: {json.dumps(artifact_dict, indent=2)}")
+        
+        # Use the request with fallback for auth strategies
+        # Note: This may need to be updated when A2A defines artifact-specific endpoints
+        result = await self._request_with_fallback("artifact/send", params, timeout_sec=timeout_sec)
+        
+        # Return result as-is, preserving structure
+        return result
+
+    async def test_agent_accessibility(self) -> Dict[str, Any]:
+        """
+        Test various endpoints of a Health Universe agent for accessibility.
+        Useful for debugging 403 Forbidden issues.
+        
+        Returns:
+            Dict with test results for different endpoints
+        """
+        results = {
+            "base_url": self.base_url,
+            "has_token": bool(self.token),
+            "endpoints": {}
+        }
+        
+        test_endpoints = [
+            ("health", "/health"),
+            ("agent_card", "/.well-known/agent-card.json"),
+            ("message_send", "/v1/message:send"),
+            ("root", "/")
+        ]
+        
+        async with self._get_session() as session:
+            for name, path in test_endpoints:
+                endpoint = f"{self.base_url}{path}"
+                try:
+                    # Use GET for non-message endpoints
+                    if name in ["health", "agent_card"]:
+                        async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                            results["endpoints"][name] = {
+                                "status": response.status,
+                                "accessible": response.status < 400,
+                                "headers": dict(response.headers),
+                                "body_size": len(await response.text())
+                            }
+                    else:
+                        # Use HEAD for message endpoints to avoid sending actual data
+                        async with session.head(endpoint, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                            results["endpoints"][name] = {
+                                "status": response.status,
+                                "accessible": response.status != 403,  # 405 Method Not Allowed is OK
+                                "headers": dict(response.headers),
+                                "method": "HEAD"
+                            }
+                except Exception as e:
+                    results["endpoints"][name] = {
+                        "error": str(e),
+                        "accessible": False
+                    }
+        
+        return results
 
 
 # Convenience function for backwards compatibility

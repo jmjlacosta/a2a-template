@@ -9,7 +9,7 @@ import sys
 import json
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 import time
 
 # Add parent directory to path
@@ -29,35 +29,8 @@ logging.basicConfig(
 )
 
 
-# Global agent instance for tool access
-_simple_agent_instance = None
-
-async def run_simple_pipeline(document: str) -> str:
-    """
-    Execute the simple medical document analysis pipeline.
-    
-    Processes documents through: keyword → grep → chunk → summarize.
-    
-    Args:
-        document: The medical document text to analyze
-        
-    Returns:
-        Medical document summary
-    """
-    global _simple_agent_instance
-    if _simple_agent_instance:
-        return await _simple_agent_instance.execute_pipeline(document)
-    return "Error: Agent not initialized"
-
-
 class SimpleOrchestratorAgent(A2AAgent):
     """Simple orchestrator that directly calls agents in sequence."""
-    
-    def __init__(self):
-        """Initialize the agent and set global instance for tool access."""
-        super().__init__()
-        global _simple_agent_instance
-        _simple_agent_instance = self
     
     def get_agent_name(self) -> str:
         """Return the agent's name."""
@@ -91,6 +64,21 @@ Always use the run_simple_pipeline tool for document analysis."""
     
     def get_tools(self) -> list:
         """Return the pipeline execution tool."""
+        # Create bound function that has access to self
+        async def run_simple_pipeline(document: str) -> str:
+            """
+            Execute the simple medical document analysis pipeline.
+            
+            Processes documents through: keyword → grep → chunk → summarize.
+            
+            Args:
+                document: The medical document text to analyze
+                
+            Returns:
+                Medical document summary
+            """
+            return await self.execute_pipeline(document)
+        
         return [FunctionTool(func=run_simple_pipeline)]
     
     async def execute_pipeline(self, message: str) -> str:
@@ -120,10 +108,10 @@ Always use the run_simple_pipeline tool for document analysis."""
 Generate comprehensive patterns for all medical information."""
             
             self.logger.info(f"📤 Sending to keyword agent: {len(keyword_message)} characters")
-            keyword_response = await self.call_other_agent("keyword", keyword_message)
+            keyword_response = await self.call_agent("keyword", keyword_message)
             self.logger.info(f"📥 Received from keyword agent: {len(keyword_response)} characters")
             
-            # Extract patterns from response (simplified - in reality would parse the response)
+            # Extract patterns from response
             patterns = self._extract_patterns(keyword_response)
             self.logger.info(f"   Extracted {len(patterns)} patterns")
             
@@ -131,15 +119,16 @@ Generate comprehensive patterns for all medical information."""
             self.logger.info("\n📍 STEP 2: Calling Grep Agent")
             self.logger.info("-"*40)
             
-            grep_message = json.dumps({
+            # Send as dict directly - no JSON string manipulation needed
+            grep_request = {
                 "patterns": patterns,
                 "document_content": message,
                 "case_sensitive": False
-            })
+            }
             
             self.logger.info(f"📤 Sending to grep agent: {len(patterns)} patterns, {len(message)} char document")
-            grep_response = await self.call_other_agent("grep", grep_message)
-            self.logger.info(f"📥 Received from grep agent: {len(grep_response)} characters")
+            grep_response = await self.call_agent("grep", grep_request)
+            self.logger.info(f"📥 Received from grep agent: {len(str(grep_response))} characters")
             
             # Parse grep results
             matches = self._parse_grep_results(grep_response)
@@ -169,14 +158,16 @@ Generate comprehensive patterns for all medical information."""
             
             chunks = []
             for i, match in enumerate(matches_to_process, 1):
-                chunk_message = json.dumps({
+                # Include document content for chunk extraction
+                chunk_request = {
                     "match_info": match,
+                    "document_content": message,  # Pass the full document
                     "lines_before": 2,
                     "lines_after": 2
-                })
+                }
                 
                 self.logger.info(f"   [{i}/{len(matches_to_process)}] Extracting chunk for line {match.get('line_number', '?')}...")
-                chunk_response = await self.call_other_agent("chunk", chunk_message)
+                chunk_response = await self.call_agent("chunk", chunk_request)
                 chunks.append(chunk_response)
             
             self.logger.info(f"   Extracted {len(chunks)} chunks")
@@ -185,10 +176,36 @@ Generate comprehensive patterns for all medical information."""
             self.logger.info("\n📍 STEP 4: Calling Summarize Agent")
             self.logger.info("-"*40)
             
-            # Combine chunks for summarization
-            combined_chunks = "\n\n".join(chunks[:5])  # Limit for summarization
+            # Extract text content from structured chunk responses
+            chunk_texts = []
+            for chunk_response in chunks[:5]:  # Limit for summarization
+                # First extract data from artifact structure
+                data = self._extract_from_artifact(chunk_response)
+                
+                if isinstance(data, dict):
+                    # Handle new structured ChunkResult format
+                    if "chunks" in data:
+                        for extracted_chunk in data.get("chunks", []):
+                            if isinstance(extracted_chunk, dict) and "content" in extracted_chunk:
+                                chunk_texts.append(extracted_chunk["content"])
+                    # Handle old format
+                    elif "chunk" in data:
+                        chunk_data = data.get("chunk", {})
+                        if "content" in chunk_data:
+                            chunk_texts.append(chunk_data["content"])
+                    # Direct content
+                    elif "content" in data:
+                        chunk_texts.append(data["content"])
+                    else:
+                        # Fallback to string representation
+                        chunk_texts.append(str(data))
+                else:
+                    chunk_texts.append(str(data))
             
-            summarize_message = json.dumps({
+            # Combine chunks for summarization
+            combined_chunks = "\n\n".join(chunk_texts)
+            
+            summarize_request = {
                 "chunk_content": combined_chunks,
                 "chunk_metadata": {
                     "source": "Eleanor Richardson medical record",
@@ -196,11 +213,14 @@ Generate comprehensive patterns for all medical information."""
                     "chunks_analyzed": len(chunks)
                 },
                 "summary_style": "clinical"
-            })
+            }
             
             self.logger.info(f"📤 Sending to summarize agent: {len(combined_chunks)} characters")
-            summary_response = await self.call_other_agent("summarize", summarize_message)
-            self.logger.info(f"📥 Received from summarize agent: {len(summary_response)} characters")
+            summary_response = await self.call_agent("summarize", summarize_request)
+            self.logger.info(f"📥 Received from summarize agent: {len(str(summary_response))} characters")
+            
+            # Extract text from summary artifact (it returns TextPart)
+            summary_text = self._extract_from_artifact(summary_response)
             
             # Calculate execution time
             execution_time = time.time() - start_time
@@ -221,7 +241,7 @@ Generate comprehensive patterns for all medical information."""
 - Chunks analyzed: {min(len(chunks), 5)}
 
 **Summary:**
-{summary_response}
+{summary_text}
 
 ---
 *Analysis performed by Simple Pipeline Orchestrator*"""
@@ -230,60 +250,113 @@ Generate comprehensive patterns for all medical information."""
             self.logger.error(f"❌ Pipeline error: {e}")
             return f"Pipeline execution failed: {str(e)}"
     
-    def _extract_patterns(self, keyword_response: str) -> List[str]:
-        """Extract patterns from keyword agent response."""
-        # Simplified extraction - in reality would parse the structured response
-        patterns = []
-        lines = keyword_response.split('\n')
-        for line in lines:
-            if '`' in line and not line.strip().startswith('#'):
-                # Extract patterns between backticks
-                import re
-                found = re.findall(r'`([^`]+)`', line)
-                patterns.extend(found)
+    def _extract_from_artifact(self, response: Any) -> Any:
+        """
+        Extract data or text from artifact response structure.
         
-        # If no patterns found, use defaults
-        if not patterns:
-            patterns = [
-                r"diabetes", r"hypertension", r"medication",
-                r"diagnosis", r"treatment", r"mg|ml|mcg",
-                r"\d+\s*(mg|ml|mcg)", r"blood\s+pressure",
-                r"heart\s+rate", r"temperature"
+        Artifacts have the structure:
+        {
+            "artifactId": "...",
+            "parts": [
+                {"kind": "data", "data": {...}} or
+                {"kind": "text", "text": "..."}
             ]
+        }
+        """
+        if isinstance(response, dict):
+            # Check if this is an artifact with parts
+            if "parts" in response and isinstance(response["parts"], list):
+                for part in response["parts"]:
+                    if isinstance(part, dict):
+                        if part.get("kind") == "data":
+                            return part.get("data")
+                        elif part.get("kind") == "text":
+                            return part.get("text")
+            
+            # Check if response has artifactId and parts (full artifact)
+            if "artifactId" in response and "parts" in response:
+                return self._extract_from_artifact({"parts": response["parts"]})
         
-        return patterns[:20]  # Limit number of patterns
+        # Fallback - return as is
+        return response
+    
+    def _extract_patterns(self, keyword_response: Any) -> List[str]:
+        """Extract patterns from keyword agent response."""
+        patterns = []
+        
+        # First extract data from artifact structure
+        data = self._extract_from_artifact(keyword_response)
+        
+        # Handle structured response from new keyword agent
+        if isinstance(data, dict):
+            # Check for the new Pydantic structure
+            if "medical_patterns" in data:
+                # Combine all pattern types from the new structure
+                patterns.extend(data.get("medical_patterns", []))
+                patterns.extend(data.get("date_patterns", []))
+                patterns.extend(data.get("section_patterns", []))
+                patterns.extend(data.get("clinical_summary_patterns", []))
+            elif "pattern_groups" in data:
+                # Extract from pattern groups
+                for group in data.get("pattern_groups", []):
+                    patterns.extend(group.get("patterns", []))
+            elif "patterns" in data:
+                # Old structure fallback
+                patterns = data["patterns"]
+        
+        # If no patterns found, return empty list (no fake patterns)
+        # The keyword agent should always provide patterns via LLM
+        if not patterns:
+            self.logger.warning("No patterns received from keyword agent")
+            patterns = []
+        
+        return patterns[:30]  # Limit number of patterns
     
     async def process_message(self, message: str) -> str:
         """
-        Process message - required by base class but not used.
+        Process message through the pipeline.
         
-        The actual processing happens via the tool function.
+        Since base class doesn't invoke tools automatically,
+        we directly execute the pipeline here.
         """
-        # This won't be called when tools are provided
-        return "Processing through simple pipeline..."
+        # Directly execute the pipeline
+        return await self.execute_pipeline(message)
     
-    def _parse_grep_results(self, grep_response: str) -> List[dict]:
+    def _parse_grep_results(self, grep_response: Any) -> List[dict]:
         """Parse grep agent results into match info."""
-        # Simplified parsing - in reality would parse the JSON response
         matches = []
-        try:
-            # Try to parse as JSON first
-            data = json.loads(grep_response)
-            if isinstance(data, dict) and "matches" in data:
+        
+        # First extract data from artifact structure
+        data = self._extract_from_artifact(grep_response)
+        
+        # Handle new structured GrepResult format
+        if isinstance(data, dict):
+            # Check for new Pydantic structure
+            if "pattern_results" in data:
+                # Extract all matches from all patterns
+                for pattern_result in data.get("pattern_results", []):
+                    for match in pattern_result.get("matches", []):
+                        # Convert MatchLocation to simple dict for chunk agent
+                        matches.append({
+                            "line_number": match.get("line_number", 1),
+                            "line_text": match.get("line_text", ""),
+                            "match_text": match.get("match_text", ""),
+                            "context": match.get("context", []),
+                            "pattern": match.get("pattern", ""),
+                            "match_position": match.get("match_position"),
+                            "single_line_doc": match.get("single_line_doc", False)
+                        })
+            # Old format compatibility
+            elif "search_results" in data:
+                # Handle old grep_tools format
+                for result in data.get("search_results", []):
+                    matches.extend(result.get("matches", []))
+            elif "matches" in data:
                 matches = data["matches"]
-            elif isinstance(data, list):
-                matches = data
-        except:
-            # Fallback: create dummy matches
-            lines = grep_response.split('\n')
-            for i, line in enumerate(lines[:20]):  # Limit matches
-                if line.strip():
-                    matches.append({
-                        "file_path": "document.txt",
-                        "line_number": i + 1,
-                        "match_text": line[:100],
-                        "file_content": grep_response
-                    })
+        
+        # If no matches found, return empty list
+        if not matches:
+            self.logger.warning("No matches found from grep agent")
         
         return matches
     

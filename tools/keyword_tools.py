@@ -1,219 +1,70 @@
 """
-Keyword generation tools for LLM-based pattern extraction.
-Following nutrition_example.py pattern with Google ADK FunctionTool.
+Keyword generation tools - simplified for single-purpose LLM pattern generation.
+The actual LLM call and Pydantic validation happens in the agent.
 """
 import json
-import re
-from typing import Dict, List, Any, Optional
+from typing import List, Optional
 from google.adk.tools import FunctionTool
 
 
-def generate_document_patterns(
-    preview: str,
-    doc_type: str = "medical",
+def generate_keyword_patterns(
+    document_preview: str,
     focus_areas: Optional[List[str]] = None,
-    max_patterns: int = 25
+    max_patterns: int = 30
 ) -> str:
     """
-    Generate regex patterns from document preview.
+    Generate keyword patterns from document preview using LLM.
     
-    This function prepares the input for LLM pattern generation.
-    The actual LLM call happens in the agent executor.
+    This function prepares the request for the LLM to generate patterns.
+    The actual LLM call and pattern generation happens in the agent executor.
     
     Args:
-        preview: First 20 lines of the document
-        doc_type: Type of medical document (medical, oncology, pathology)
-        focus_areas: Specific areas to focus on (diagnosis, treatment, etc.)
-        max_patterns: Maximum patterns to generate
+        document_preview: First lines of the document to analyze
+        focus_areas: Specific areas to focus on (clinical_summary, dates, etc.)
+        max_patterns: Maximum number of patterns to generate
         
     Returns:
-        JSON string with pattern generation request
+        JSON string with pattern generation request for LLM processing
     """
     if not focus_areas:
-        focus_areas = ["diagnosis", "treatment", "medications", "procedures"]
+        focus_areas = ["clinical_summary", "dates", "medications", "diagnoses", "procedures"]
     
-    # Validate preview
-    lines = preview.split('\n')
-    preview_lines = '\n'.join(lines[:20])  # Limit to first 20 lines
+    # Limit preview to reasonable size
+    preview_lines = document_preview.split('\n')[:30]
+    preview_text = '\n'.join(preview_lines)
     
     # Build request for LLM processing
     request = {
         "action": "generate_patterns",
-        "preview": preview_lines,
-        "doc_type": doc_type,
+        "preview": preview_text,
         "focus_areas": focus_areas,
         "max_patterns": max_patterns,
         "instructions": f"""Analyze this medical document preview and generate regex patterns.
-        
-Document Type: {doc_type}
+
 Focus Areas: {', '.join(focus_areas)}
 
-Generate ripgrep-compatible regex patterns that will help identify:
-1. Section boundaries (headers, transitions)
-2. Clinical events and findings
-3. Relevant medical terms and their common variations
-4. Temporal markers that indicate when events occurred
+CRITICAL: Generate patterns to find:
+1. ALL dates and temporal markers
+2. Clinical summary and assessment sections
+3. Medical terminology specific to this document
+4. Document structure and section headers
 
 Requirements:
-- Use case-insensitive patterns where appropriate: (?i)
-- Include common abbreviations and full terms
-- Patterns should be specific enough to avoid false positives
-- Consider medical synonyms and variations
-- Include both structured (e.g., "CBC:") and narrative formats
+- Use ripgrep-compatible regex syntax
+- Include case-insensitive flags (?i) where appropriate
+- Generate REAL patterns based on the actual document content
+- NO placeholder or generic patterns
 - Maximum {max_patterns} patterns total
-- Focus especially on: {', '.join(focus_areas)}"""
+- Prioritize: {', '.join(focus_areas[:3])}"""
     }
     
-    return json.dumps(request)
+    return json.dumps(request, indent=2)
 
 
-def generate_focused_patterns(
-    preview: str,
-    focus_type: str,
-    max_patterns: int = 10
-) -> str:
-    """
-    Generate patterns focused on specific medical aspects.
-    
-    Args:
-        preview: Document preview
-        focus_type: Type to focus on (medications, procedures, labs, etc.)
-        max_patterns: Maximum patterns to generate
-        
-    Returns:
-        JSON string with focused pattern generation request
-    """
-    focus_instructions = {
-        "medications": "medication names, dosages, routes, frequencies, and drug classes",
-        "procedures": "surgical procedures, interventions, and medical operations",
-        "labs": "laboratory tests, results, reference ranges, and abnormal values",
-        "diagnosis": "diagnoses, ICD codes, disease names, and conditions",
-        "vitals": "vital signs, measurements, and physiological parameters",
-        "allergies": "allergies, reactions, and sensitivities"
-    }
-    
-    instruction = focus_instructions.get(focus_type, "relevant medical information")
-    
-    request = {
-        "action": "generate_focused_patterns",
-        "preview": preview.split('\n')[:20],
-        "focus_type": focus_type,
-        "max_patterns": max_patterns,
-        "instructions": f"""Generate regex patterns specifically for {focus_type}.
-        
-Focus on identifying: {instruction}
+# Create FunctionTool instance for Google ADK
+generate_patterns_tool = FunctionTool(func=generate_keyword_patterns)
 
-Create patterns that:
-- Are highly specific to {focus_type}
-- Include common abbreviations and variations
-- Work with both structured and narrative text
-- Use case-insensitive matching where appropriate"""
-    }
-    
-    return json.dumps(request)
-
-
-def analyze_preview_structure(preview: str) -> str:
-    """
-    Analyze document structure to help pattern generation.
-    
-    Args:
-        preview: Document preview
-        
-    Returns:
-        JSON string with structure analysis
-    """
-    lines = preview.split('\n')[:20]
-    
-    # Basic structure detection
-    headers = []
-    date_lines = []
-    structured_lines = []
-    
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        
-        # Detect headers (lines ending with colon, all caps, etc.)
-        if stripped and (
-            stripped.endswith(':') or
-            stripped.isupper() or
-            (len(stripped) < 50 and stripped[0].isupper() and ':' in stripped)
-        ):
-            headers.append({
-                "line": i + 1,
-                "text": stripped,
-                "type": "header" if stripped.endswith(':') else "section"
-            })
-        
-        # Detect dates
-        if re.search(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', line):
-            date_lines.append(i + 1)
-        
-        # Detect structured data (key: value format)
-        if ':' in line and len(line) < 100:
-            structured_lines.append(i + 1)
-    
-    analysis = {
-        "action": "structure_analysis",
-        "total_lines": len(lines),
-        "headers_found": headers,
-        "date_lines": date_lines,
-        "structured_lines": structured_lines,
-        "preview_snippet": '\n'.join(lines[:5])
-    }
-    
-    return json.dumps(analysis)
-
-
-def validate_patterns(patterns: List[str]) -> str:
-    """
-    Validate regex patterns for correctness.
-    
-    Args:
-        patterns: List of regex patterns to validate
-        
-    Returns:
-        JSON string with validation results
-    """
-    results = []
-    
-    for pattern in patterns:
-        try:
-            # Try to compile the regex
-            re.compile(pattern)
-            results.append({
-                "pattern": pattern,
-                "valid": True,
-                "error": None
-            })
-        except re.error as e:
-            results.append({
-                "pattern": pattern,
-                "valid": False,
-                "error": str(e)
-            })
-    
-    validation = {
-        "action": "pattern_validation",
-        "total_patterns": len(patterns),
-        "valid_patterns": sum(1 for r in results if r["valid"]),
-        "invalid_patterns": sum(1 for r in results if not r["valid"]),
-        "results": results
-    }
-    
-    return json.dumps(validation)
-
-
-# Create FunctionTool instances for Google ADK
-generate_patterns_tool = FunctionTool(func=generate_document_patterns)
-focused_patterns_tool = FunctionTool(func=generate_focused_patterns)
-structure_analysis_tool = FunctionTool(func=analyze_preview_structure)
-validate_patterns_tool = FunctionTool(func=validate_patterns)
-
-# Export all tools
+# Export simplified tool list
 KEYWORD_TOOLS = [
-    generate_patterns_tool,
-    focused_patterns_tool,
-    structure_analysis_tool,
-    validate_patterns_tool
+    generate_patterns_tool
 ]
