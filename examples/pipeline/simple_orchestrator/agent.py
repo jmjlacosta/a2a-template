@@ -242,7 +242,7 @@ class SimpleOrchestratorAgent(A2AAgent):
         
         # Call keyword agent
         try:
-            response = await self.call_other_agent_message(
+            response = await self.call_agent(
                 self.keyword_agent, 
                 keyword_msg,
                 timeout=self.CALL_TIMEOUT_SEC
@@ -328,7 +328,7 @@ class SimpleOrchestratorAgent(A2AAgent):
         })
         
         try:
-            response = await self.call_other_agent_message(
+            response = await self.call_agent(
                 self.grep_agent,
                 grep_msg,
                 timeout=self.CALL_TIMEOUT_SEC
@@ -357,12 +357,17 @@ class SimpleOrchestratorAgent(A2AAgent):
             })
             
             try:
-                chunk_resp = await self.call_other_agent_message(
+                chunk_resp = await self.call_agent(
                     self.chunk_agent,
                     chunk_msg,
                     timeout=self.CALL_TIMEOUT_SEC
                 )
-                chunks.append(chunk_resp)
+                # Extract text from chunk artifact
+                chunk_text = self._extract_from_artifact(chunk_resp)
+                if isinstance(chunk_text, dict):
+                    # If it's structured data, convert to string
+                    chunk_text = json.dumps(chunk_text)
+                chunks.append(str(chunk_text))
             except Exception as e:
                 self.logger.error(f"❌ Chunk extraction failed: {e}")
                 # No fallback - skip this chunk
@@ -387,11 +392,15 @@ class SimpleOrchestratorAgent(A2AAgent):
         })
         
         try:
-            summary = await self.call_other_agent_message(
+            summary_resp = await self.call_agent(
                 self.summarize_agent,
                 sum_msg,
                 timeout=self.CALL_TIMEOUT_SEC * 2  # Give more time for summarization
             )
+            # Extract text from summary artifact
+            summary = self._extract_from_artifact(summary_resp)
+            if isinstance(summary, dict):
+                summary = json.dumps(summary)
         except Exception as e:
             self.logger.error(f"Summarize agent error: {e}")
             summary = "Summary generation failed. Please review the extracted chunks manually."
@@ -482,64 +491,35 @@ class SimpleOrchestratorAgent(A2AAgent):
         # Use message_utils helper for consistent Part creation
         return create_agent_message(data, role="user")
     
-    async def call_other_agent_message(self, agent_name: str, message: Message, timeout: float = 30.0) -> str:
+    def _extract_from_artifact(self, response: Any) -> Any:
         """
-        Call another agent with a structured Message.
-        Falls back to text if Message not supported.
+        Extract data or text from artifact response structure.
+        
+        Artifacts have the structure:
+        {
+            "artifactId": "...",
+            "parts": [
+                {"kind": "data", "data": {...}} or
+                {"kind": "text", "text": "..."}
+            ]
+        }
         """
-        try:
-            # Try to use A2AClient with message support
-            from utils.a2a_client import A2AClient
+        if isinstance(response, dict):
+            # Check if this is an artifact with parts
+            if "parts" in response and isinstance(response["parts"], list):
+                for part in response["parts"]:
+                    if isinstance(part, dict):
+                        if part.get("kind") == "data":
+                            return part.get("data")
+                        elif part.get("kind") == "text":
+                            return part.get("text")
             
-            # Create client
-            if agent_name.startswith(('http://', 'https://')):
-                client = A2AClient(agent_name)
-            else:
-                client = A2AClient.from_registry(agent_name)
-            
-            try:
-                # Call with message using send_message
-                result = await client.send_message(
-                    message,
-                    timeout_sec=timeout
-                )
-                
-                # Parse response
-                if isinstance(result, dict):
-                    # Check for message response format
-                    if "message" in result:
-                        msg = result["message"]
-                        if isinstance(msg, dict) and "parts" in msg:
-                            # Extract text from parts
-                            texts = []
-                            for part in msg["parts"]:
-                                if part.get("kind") == "text":
-                                    texts.append(part.get("text", ""))
-                            return "\n".join(texts)
-                    # Check for direct text field
-                    if "text" in result:
-                        return result["text"]
-                    # Return as JSON if structured
-                    return json.dumps(result)
-                return str(result)
-            finally:
-                await client.close()
-                
-        except Exception as e:
-            # Fallback to text-based call
-            self.logger.debug(f"Message call failed, falling back to text: {e}")
-            
-            # Convert message to text
-            text_parts = []
-            for part in message.parts:
-                if hasattr(part, 'kind'):
-                    if part.kind == "data":
-                        text_parts.append(json.dumps(part.data))
-                    elif part.kind == "text":
-                        text_parts.append(part.text)
-            
-            text_payload = "\n".join(text_parts)
-            return await self.call_other_agent(agent_name, text_payload, timeout)
+            # Check if response has artifactId and parts (full artifact)
+            if "artifactId" in response and "parts" in response:
+                return self._extract_from_artifact({"parts": response["parts"]})
+        
+        # Fallback - return as is
+        return response
 
     def _extract_message_text(self, context: RequestContext) -> str:
         """Extract message text from A2A RequestContext."""
@@ -579,8 +559,15 @@ class SimpleOrchestratorAgent(A2AAgent):
         patterns = []
         source = "unknown"
         
-        # Extract all data from all parts
+        # First extract from artifact structure if present
+        response = self._extract_from_artifact(response)
+        
+        # Then extract all data from all parts
         data = self._extract_all_data(response)
+        
+        # If _extract_all_data didn't find anything, response might be the data directly
+        if not data and isinstance(response, dict):
+            data = response
         
         if data:
             source = data.get("source", "unknown")
@@ -591,9 +578,10 @@ class SimpleOrchestratorAgent(A2AAgent):
                 self.logger.info(f"Using flat patterns list from {source}: {len(patterns)} patterns")
             
             # Extract from categories if no flat list
+            # Updated to match keyword agent's actual output fields
             if not patterns:
-                for category in ["section_patterns", "clinical_patterns", "medication_patterns", 
-                               "temporal_patterns", "vital_patterns", "event_patterns", "term_patterns"]:
+                for category in ["medical_patterns", "date_patterns", "section_patterns", 
+                               "clinical_summary_patterns"]:
                     if category in data:
                         for p in data[category]:
                             if isinstance(p, dict) and "pattern" in p:
@@ -625,8 +613,15 @@ class SimpleOrchestratorAgent(A2AAgent):
     def _parse_grep_results(self, response: Any) -> List[Dict[str, Any]]:
         """Parse grep agent response to extract ALL matches from ALL parts."""
         
+        # First extract from artifact structure if present
+        response = self._extract_from_artifact(response)
+        
         # Extract and merge all data from all parts
         data = self._extract_all_data(response)
+        
+        # If _extract_all_data didn't find anything, response might be the data directly
+        if not data and isinstance(response, dict):
+            data = response
         
         if data and "matches" in data:
             matches = data.get("matches", [])

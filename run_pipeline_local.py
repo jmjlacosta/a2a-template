@@ -36,11 +36,11 @@ sys.path.insert(0, os.getcwd())
 
 # Agent configurations - matching the ports in each agent's __main__
 AGENTS: List[Dict] = [
-    {"name": "keyword",     "module": "examples.pipeline.keyword_agent",     "port": 8002},
-    {"name": "grep",        "module": "examples.pipeline.grep_agent",        "port": 8003},
-    {"name": "chunk",       "module": "examples.pipeline.chunk_agent",       "port": 8004},
-    {"name": "summarize",   "module": "examples.pipeline.summarize_agent",   "port": 8005},
-    {"name": "orchestrator","module": "examples.pipeline.simple_orchestrator_agent", "port": 8008},
+    {"name": "keyword",     "module": "examples.pipeline.keyword.main",     "port": 8002},
+    {"name": "grep",        "module": "examples.pipeline.grep.main",        "port": 8003},
+    {"name": "chunk",       "module": "examples.pipeline.chunk.main",       "port": 8004},
+    {"name": "summarize",   "module": "examples.pipeline.summarize.main",   "port": 8005},
+    {"name": "orchestrator","module": "examples.pipeline.simple_orchestrator.main", "port": 8008},
 ]
 
 REGISTRY_PATH = Path("config/agents.json")

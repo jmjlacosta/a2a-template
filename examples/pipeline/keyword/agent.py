@@ -94,16 +94,21 @@ class KeywordAgent(A2AAgent):
             
         except Exception as e:
             logger.error(f"Error generating patterns: {e}")
-            # Return fallback patterns with error info
-            fallback = self._get_fallback_patterns_json()
-            fallback["diagnostic_info"] = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "api_keys_detected": self._check_api_keys(),
-                "provider_info": self._get_provider_info(),
-                "source": "fallback_due_to_error"
+            # Return empty patterns with error info - NO FALLBACKS
+            return {
+                "medical_patterns": [],
+                "date_patterns": [],
+                "section_patterns": [],
+                "clinical_summary_patterns": [],
+                "patterns": [],  # Empty flat list for compatibility
+                "diagnostic_info": {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "api_keys_detected": self._check_api_keys(),
+                    "provider_info": self._get_provider_info(),
+                    "source": "error_no_patterns"
+                }
             }
-            return fallback
 
     async def _generate_patterns(self, preview: str, focus_areas: List[str]) -> Dict[str, Any]:
         """Generate patterns using structured LLM output."""
@@ -202,38 +207,68 @@ class KeywordAgent(A2AAgent):
             result["source"] = "llm"
             result["status"] = "success"
             
-            # Also create a flat patterns list for easier consumption
-            flat_patterns = []
-            for category in result:
-                if category != "source" and isinstance(result[category], list):
-                    for p in result[category]:
-                        if isinstance(p, dict) and "pattern" in p:
-                            flat_patterns.append(p["pattern"])
-            result["patterns"] = flat_patterns
-            
-            return result
-            
-        except Exception as e:
-            logger.warning(f"LLM pattern generation failed: {e}, using enhanced fallbacks")
-            fallback = self._get_fallback_patterns_json()
-            fallback["source"] = "fallback"
-            fallback["status"] = "llm_failed"
-            fallback["llm_error"] = {
-                "error_type": type(e).__name__,
-                "error_message": str(e)[:500],  # Limit error message length
-                "provider_attempted": self._get_provider_info().get("provider", "unknown")
+            # Transform to expected format for orchestrator
+            # Extract just the pattern strings from each category
+            transformed = {
+                "medical_patterns": [],
+                "date_patterns": [],
+                "section_patterns": [],
+                "clinical_summary_patterns": [],
+                "patterns": []  # Flat list for compatibility
             }
             
-            # Create flat patterns list
-            flat_patterns = []
-            for category in fallback:
-                if category not in ["source", "status", "llm_error"] and isinstance(fallback[category], list):
-                    for p in fallback[category]:
-                        if isinstance(p, dict) and "pattern" in p:
-                            flat_patterns.append(p["pattern"])
-            fallback["patterns"] = flat_patterns
+            # Map the generated categories to expected names
+            if "medication_patterns" in result:
+                for p in result["medication_patterns"]:
+                    if isinstance(p, dict) and "pattern" in p:
+                        transformed["medical_patterns"].append(p["pattern"])
             
-            return fallback
+            if "temporal_patterns" in result:
+                for p in result["temporal_patterns"]:
+                    if isinstance(p, dict) and "pattern" in p:
+                        transformed["date_patterns"].append(p["pattern"])
+                        
+            if "section_patterns" in result:
+                for p in result["section_patterns"]:
+                    if isinstance(p, dict) and "pattern" in p:
+                        transformed["section_patterns"].append(p["pattern"])
+                        
+            if "clinical_patterns" in result:
+                for p in result["clinical_patterns"]:
+                    if isinstance(p, dict) and "pattern" in p:
+                        transformed["clinical_summary_patterns"].append(p["pattern"])
+            
+            # Create flat list
+            transformed["patterns"] = (
+                transformed["medical_patterns"] + 
+                transformed["date_patterns"] + 
+                transformed["section_patterns"] + 
+                transformed["clinical_summary_patterns"]
+            )
+            
+            # Add metadata
+            transformed["source"] = result.get("source", "llm")
+            transformed["status"] = result.get("status", "success")
+            
+            return transformed
+            
+        except Exception as e:
+            logger.error(f"LLM pattern generation failed: {e}")
+            # Return empty patterns - NO FALLBACKS
+            return {
+                "medical_patterns": [],
+                "date_patterns": [],
+                "section_patterns": [],
+                "clinical_summary_patterns": [],
+                "patterns": [],  # Empty flat list for compatibility
+                "source": "llm_failed",
+                "status": "error",
+                "llm_error": {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)[:500],  # Limit error message length
+                    "provider_attempted": self._get_provider_info().get("provider", "unknown")
+                }
+            }
 
     def _build_pattern_prompt(self, preview: str, focus_areas: List[str]) -> str:
         """Build prompt for timeline-focused pattern generation."""
@@ -301,74 +336,16 @@ Return ONLY valid JSON matching the schema. No additional text."""
         return validated
 
     def _ensure_minimum_patterns(self, patterns: Dict[str, List[Dict[str, str]]]) -> Dict[str, List[Dict[str, str]]]:
-        """Ensure we have at least some patterns in each category."""
+        """Log warning if we have too few patterns but don't add fallbacks."""
         # Count total patterns
         total = sum(len(p) for p in patterns.values())
         
         if total < 5:
-            # Merge with fallback patterns
-            fallbacks = self._get_fallback_patterns_json()
-            for category in fallbacks:
-                if category not in patterns:
-                    patterns[category] = fallbacks[category]
-                elif len(patterns[category]) == 0:
-                    patterns[category] = fallbacks[category]
+            logger.warning(f"Only {total} patterns generated - may need to check LLM configuration")
+            # NO FALLBACKS - just return what we have
         
         return patterns
 
-    def _get_fallback_patterns_json(self) -> Dict[str, List[Dict[str, str]]]:
-        """Get fallback patterns optimized for timeline extraction."""
-        return {
-            # PRIORITY 1: Temporal patterns for timeline building
-            "temporal_patterns": [
-                {"pattern": r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", "priority": "high", "description": "Date MM/DD/YYYY"},
-                {"pattern": r"\b\d{4}-\d{2}-\d{2}\b", "priority": "high", "description": "Date YYYY-MM-DD"},
-                {"pattern": r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b", "priority": "high", "description": "Date with various separators"},
-                {"pattern": r"(?i)(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}", "priority": "high", "description": "Date Month DD, YYYY"},
-                {"pattern": r"(?i)\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b", "priority": "high", "description": "Full month names"},
-                {"pattern": r"\b(?:19|20)\d{2}\b", "priority": "high", "description": "Year YYYY"},
-                {"pattern": r"(?i)in\s+(?:19|20)\d{2}", "priority": "high", "description": "In year"},
-                {"pattern": r"(?i)(?:yesterday|today|tomorrow|last\s+(?:week|month|year))", "priority": "medium", "description": "Relative time"},
-                {"pattern": r"\b\d+\s*(?:day|week|month|year)s?\s+ago\b", "priority": "high", "description": "Time duration ago"},
-                {"pattern": r"(?i)(?:on|at|during|since|until|before|after|following)\s+", "priority": "high", "description": "Temporal prepositions"},
-            ],
-            # PRIORITY 2: Medical events that happen at specific times
-            "event_patterns": [
-                {"pattern": r"(?i)(?:admitted|admission|discharged|discharge)", "priority": "high", "description": "Admission/discharge events"},
-                {"pattern": r"(?i)(?:diagnosed|diagnosis\s+of|diagnosed\s+with)", "priority": "high", "description": "Diagnosis events"},
-                {"pattern": r"(?i)(?:underwent|performed|completed|received|had)", "priority": "high", "description": "Procedure verbs"},
-                {"pattern": r"(?i)(?:started|initiated|begun|commenced)", "priority": "high", "description": "Treatment start"},
-                {"pattern": r"(?i)(?:stopped|discontinued|ended|completed)", "priority": "high", "description": "Treatment end"},
-                {"pattern": r"(?i)(?:presented|arrived|came\s+in|brought\s+in)", "priority": "high", "description": "Presentation events"},
-                {"pattern": r"(?i)(?:surgery|procedure|operation|biopsy|scan|imaging)", "priority": "high", "description": "Procedures"},
-                {"pattern": r"(?i)(?:emergency|urgent|routine|scheduled|elective)", "priority": "medium", "description": "Event urgency"},
-            ],
-            # PRIORITY 3: Generic medication patterns (no specific drug names)
-            "medication_patterns": [
-                {"pattern": r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|μg|g|ml|cc|units?|iu|tablets?|pills?|caps?)\b", "priority": "high", "description": "Medication dosage with units"},
-                {"pattern": r"(?i)(?:once|twice|three\s+times|four\s+times)\s+(?:a\s+)?(?:day|daily|week|weekly|month|monthly)", "priority": "high", "description": "Frequency phrases"},
-                {"pattern": r"(?i)(?:q\.?\d+h|every\s+\d+\s+hours?)", "priority": "high", "description": "Hourly frequency"},
-                {"pattern": r"(?i)(?:q\.?d\.?|b\.?i\.?d\.?|t\.?i\.?d\.?|q\.?i\.?d\.?|prn)", "priority": "high", "description": "Medical frequency abbreviations"},
-                {"pattern": r"(?i)(?:daily|weekly|monthly|as\s+needed)", "priority": "high", "description": "Common frequencies"},
-                {"pattern": r"(?i)\b[A-Z][a-z]+(?:in|ol|ide|ate|ine|one|pril|artan|statin|zole|cycline|cillin|mycin|azole|pam|pine)\b", "priority": "medium", "description": "Drug name patterns by suffix"},
-                {"pattern": r"(?i)(?:medication|med|rx|drug|prescription)s?\s*[:]\s*", "priority": "medium", "description": "Medication section marker"},
-                {"pattern": r"(?i)(?:started|changed|increased|decreased|switched\s+to|adjusted)", "priority": "high", "description": "Medication changes"},
-            ],
-            # Clinical findings (de-prioritized but still useful)
-            "clinical_patterns": [
-                {"pattern": r"(?i)(?:chief\s+complaint|cc|presenting\s+complaint|reason\s+for\s+visit)", "priority": "high", "description": "Chief complaint"},
-                {"pattern": r"(?i)(?:history\s+of|h/o|hx\s+of|past\s+medical)", "priority": "medium", "description": "History markers"},
-                {"pattern": r"(?i)(?:diagnosis|diagnoses|dx|impression)[:]\s*", "priority": "high", "description": "Diagnosis section"},
-                {"pattern": r"(?i)(?:no\s+evidence\s+of|negative\s+for|denied|denies)", "priority": "medium", "description": "Negative findings"},
-            ],
-            # Vital signs (often timestamped)
-            "vital_patterns": [
-                {"pattern": r"(?i)(?:blood\s+pressure|bp)[\s:]+\d{2,3}/\d{2,3}", "priority": "high", "description": "Blood pressure"},
-                {"pattern": r"(?i)(?:heart\s+rate|hr|pulse)[\s:]+\d{2,3}", "priority": "high", "description": "Heart rate"},
-                {"pattern": r"(?i)(?:temperature|temp)[\s:]+\d{2,3}(?:\.\d)?", "priority": "high", "description": "Temperature"},
-                {"pattern": r"(?i)(?:o2\s+sat|oxygen\s+saturation|spo2)[\s:]+\d{2,3}%?", "priority": "high", "description": "Oxygen saturation"},
-            ]
-        }
     
     def _check_api_keys(self) -> Dict[str, bool]:
         """Check which API keys are present (without exposing values)"""

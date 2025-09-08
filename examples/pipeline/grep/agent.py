@@ -133,9 +133,9 @@ class GrepAgent(A2AAgent):
         """Extract pattern strings from structured pattern data."""
         patterns = []
         
-        # Handle categorized patterns from keyword agent
-        for category in ["section_patterns", "clinical_patterns", "medication_patterns", 
-                        "temporal_patterns", "vital_patterns", "term_patterns"]:
+        # Handle categorized patterns from keyword agent - updated field names
+        for category in ["medical_patterns", "date_patterns", "section_patterns", 
+                        "clinical_summary_patterns"]:
             if category in patterns_data:
                 for pattern_obj in patterns_data[category]:
                     if isinstance(pattern_obj, dict) and "pattern" in pattern_obj:
