@@ -87,44 +87,122 @@ class SimpleOrchestratorAgent(A2AAgent):
             "Execute the fixed pipeline sequence and return structured results."
         )
 
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """
+        Stream intermediate status updates for each pipeline step and finalize with an artifact.
+        """
+        task = None
+        try:
+            # Extract incoming document text
+            message_text = self._extract_message(context)
+            if not message_text:
+                raise ValueError("No message provided in request")
+
+            # Create or get task
+            task = context.current_task
+            if not task:
+                task = new_task(context.message or new_agent_text_message("Starting pipeline..."))
+                await event_queue.enqueue_event(task)
+
+            context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+            updater = TaskUpdater(event_queue, task.id, context_id)
+
+            # Parse document
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Initializing pipeline and parsing document...")
+            )
+            document = self._extract_document(message_text)
+
+            # Step 1: Keywords
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Step 1/4: Generating keyword patterns...")
+            )
+            patterns = await self._step_keywords(document)
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"Generated {len(patterns)} patterns")
+            )
+
+            # Step 2: Grep
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Step 2/4: Searching document with patterns...")
+            )
+            matches = await self._step_grep(patterns, document)
+            unique_matches = self._deduplicate_matches(matches)
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"Found {len(unique_matches)} unique matches")
+            )
+
+            # Step 3: Chunk
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Step 3/4: Extracting text chunks around matches...")
+            )
+            chunks = await self._step_chunk(unique_matches[: self.MAX_MATCHES_FOR_CHUNKS], document)
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"Extracted {len(chunks)} chunks")
+            )
+
+            # Step 4: Summarize
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Step 4/4: Generating summary from chunks...")
+            )
+            summary = await self._step_summarize(chunks, len(matches))
+
+            # Final formatting and artifact output
+            final_text = self._format_final_response(
+                patterns,
+                unique_matches,
+                chunks,
+                summary,
+                0.0
+            )
+
+            await updater.add_artifact(
+                parts=[TextPart(kind="text", text=str(final_text))],
+                artifact_id=f"result-{task.id}",
+                name=f"{self.get_agent_name()} Result",
+                metadata={"agent": self.get_agent_name()}
+            )
+
+            await updater.update_status(
+                TaskState.completed,
+                new_agent_text_message("Pipeline completed. Generated 1 artifact.")
+            )
+
+        except Exception as e:
+            self.logger.error(f"Pipeline error: {e}")
+            if task:
+                context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
+                updater = TaskUpdater(event_queue, task.id, context_id)
+                await updater.update_status(
+                    TaskState.failed,
+                    new_agent_text_message(f"Task failed: {str(e)}")
+                )
+            raise
+
 
     async def process_message(self, message: str) -> str:
         """
         Process message - run the full pipeline.
         The base class execute() handles TaskUpdater for streaming.
         """
+        # This method is not used when streaming via execute(); keep for compatibility/tests.
         t0 = time.time()
-        self.logger.info("Starting document analysis pipeline")
-        
-        # Parse input
         document = self._extract_document(message)
-        
-        # Run pipeline steps
-        self.logger.info("Step 1/4: Generating keyword patterns")
         patterns = await self._step_keywords(document)
-        self.logger.info(f"Step 1/4 complete: Generated {len(patterns)} patterns")
-        
-        self.logger.info("Step 2/4: Searching document with patterns")
         matches = await self._step_grep(patterns, document)
         unique_matches = self._deduplicate_matches(matches)
-        self.logger.info(f"Step 2/4 complete: Found {len(unique_matches)} matches")
-        
-        self.logger.info("Step 3/4: Extracting text chunks")
         chunks = await self._step_chunk(unique_matches[:self.MAX_MATCHES_FOR_CHUNKS], document)
-        self.logger.info(f"Step 3/4 complete: Extracted {len(chunks)} chunks")
-        
-        self.logger.info("Step 4/4: Generating summary")
         summary = await self._step_summarize(chunks, len(matches))
-        self.logger.info("Step 4/4 complete: Summary generated")
-        
-        # Format and return result
         elapsed = time.time() - t0
-        final_text = self._format_final_response(
-            patterns, unique_matches, chunks, summary, elapsed
-        )
-        
-        self.logger.info(f"Pipeline complete in {elapsed:.2f}s")
-        return final_text
+        return self._format_final_response(patterns, unique_matches, chunks, summary, elapsed)
 
     # --- Pipeline Steps ---
     async def _step_keywords(self, document: str) -> List[str]:

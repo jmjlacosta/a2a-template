@@ -59,7 +59,7 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("📋 Endpoints:")
     logger.info(f"   Agent Card: http://localhost:{port}/.well-known/agent-card.json")
-    logger.info(f"   A2A Sync:   http://localhost:{port}/a2a/v1/message/sync")
+    logger.info(f"   JSON-RPC:   POST http://localhost:{port}/ (method: \"message/send\")")
     logger.info(f"   Health:     http://localhost:{port}/health")
     logger.info("=" * 60)
     logger.info("🔗 Pipeline Agents:")

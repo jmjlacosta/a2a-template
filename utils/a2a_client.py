@@ -154,7 +154,7 @@ class A2AClient:
             endpoint = self.base_url
             payload = _jsonrpc_envelope(method, params)
         elif method == "tasks/get":
-            endpoint = f"{self.base_url}/v1/tasks"  # Will need task ID parameter
+            endpoint = self.base_url  # JSON-RPC always uses root endpoint
             payload = _jsonrpc_envelope(method, params)
         else:
             # Fallback to root JSON-RPC for unmapped methods

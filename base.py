@@ -91,13 +91,9 @@ class A2AAgent(AgentExecutor, ABC):
             version=self.get_agent_version(),
             url=base_url,
             
-            # Transport configuration - HTTP+JSON for REST endpoints
-            preferredTransport="HTTP",
+            # Transport configuration - JSON-RPC is currently implemented
+            preferredTransport="JSONRPC",
             additionalInterfaces=[
-                {
-                    "url": base_url,
-                    "transport": "HTTP"
-                },
                 {
                     "url": base_url,
                     "transport": "JSONRPC"
