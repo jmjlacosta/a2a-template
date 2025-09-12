@@ -1,11 +1,14 @@
 """
 Utility functions for creating properly formatted A2A message parts.
 Ensures compatibility with Google ADK Runner and proper Part discrimination.
+
+CRITICAL: Markdown content (.md files) MUST be sent as TextPart, not FilePart.
 """
 
-from typing import Any, List, Union, Dict
+from typing import Any, List, Union, Dict, Optional
 from a2a.types import TextPart, DataPart, FilePart, Part, Message
 import json
+import mimetypes
 
 
 def create_text_part(text: str) -> TextPart:
@@ -47,11 +50,18 @@ def create_file_part(name: str, uri: str = None, bytes_data: bytes = None, mime_
     Returns:
         FilePart with kind="file"
     """
+    import base64
+    
     file_obj = {"name": name}
     if uri:
         file_obj["uri"] = uri
-    if bytes_data:
-        file_obj["bytes"] = bytes_data
+    elif bytes_data:
+        # FilePart expects base64 encoded string for bytes
+        file_obj["bytes"] = base64.b64encode(bytes_data).decode('utf-8')
+    else:
+        # Must have either uri or bytes
+        file_obj["uri"] = ""  # Empty URI as fallback
+    
     if mime_type:
         file_obj["mimeType"] = mime_type
     
@@ -217,3 +227,151 @@ def format_for_llm(parts: List[Part]) -> str:
                 formatted.append(f"[File: {name}]")
     
     return "\n".join(formatted)
+
+
+def detect_content_type(content: Any, filename: Optional[str] = None) -> str:
+    """
+    Detect the appropriate content type for the given content.
+    
+    Args:
+        content: The content to analyze
+        filename: Optional filename for MIME type detection
+        
+    Returns:
+        MIME type string
+    """
+    # Check filename extension first
+    if filename:
+        # CRITICAL: Markdown files must be treated as text
+        if filename.endswith('.md'):
+            return "text/markdown"
+        elif filename.endswith(('.txt', '.log', '.csv', '.tsv')):
+            return "text/plain"
+        elif filename.endswith(('.json', '.jsonl')):
+            return "application/json"
+        elif filename.endswith(('.xml', '.html', '.htm')):
+            return "text/html"
+        elif filename.endswith(('.yaml', '.yml')):
+            return "text/yaml"
+        
+        # Use mimetypes for other files
+        mime_type, _ = mimetypes.guess_type(filename)
+        if mime_type:
+            return mime_type
+    
+    # Content-based detection
+    if isinstance(content, str):
+        # Check if it looks like markdown
+        markdown_markers = ['# ', '## ', '### ', '```', '**', '__', '- [ ]', '- [x]', '![', '[](']
+        if any(marker in content for marker in markdown_markers):
+            return "text/markdown"
+        # Check if it's JSON
+        try:
+            json.loads(content)
+            return "application/json"
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return "text/plain"
+    elif isinstance(content, (dict, list)):
+        return "application/json"
+    elif isinstance(content, bytes):
+        return "application/octet-stream"
+    else:
+        return "text/plain"
+
+
+def is_text_content(content: Any, filename: Optional[str] = None) -> bool:
+    """
+    Determine if content should be sent as TextPart.
+    
+    CRITICAL: Markdown content MUST always be sent as TextPart.
+    
+    Args:
+        content: The content to check
+        filename: Optional filename for type detection
+        
+    Returns:
+        True if content should be TextPart, False if FilePart
+    """
+    # CRITICAL: Markdown files are ALWAYS text
+    if filename and filename.endswith('.md'):
+        return True
+    
+    # Check content type
+    content_type = detect_content_type(content, filename)
+    
+    # Text MIME types that should be TextPart
+    text_types = [
+        "text/",  # All text/* types
+        "application/json",
+        "application/xml",
+        "application/yaml",
+        "application/x-yaml",
+        "application/javascript",
+        "application/typescript"
+    ]
+    
+    return any(content_type.startswith(t) for t in text_types)
+
+
+def create_part_from_file(
+    content: Union[str, bytes],
+    filename: str,
+    mime_type: Optional[str] = None
+) -> Part:
+    """
+    Create the appropriate Part type for file content.
+    
+    CRITICAL: Markdown files (.md) MUST be sent as TextPart, not FilePart.
+    
+    Args:
+        content: File content (string or bytes)
+        filename: Name of the file
+        mime_type: Optional explicit MIME type
+        
+    Returns:
+        Appropriate Part object (TextPart for markdown and text, FilePart for binary)
+    """
+    # Detect MIME type if not provided
+    if not mime_type:
+        mime_type = detect_content_type(content, filename)
+    
+    # CRITICAL: Markdown handling
+    if filename.endswith('.md'):
+        # Markdown MUST be TextPart
+        if isinstance(content, bytes):
+            content = content.decode('utf-8')
+        return TextPart(
+            kind="text",
+            text=str(content),
+            metadata={"contentType": mime_type or "text/markdown"}
+        )
+    
+    # Check if it's text content
+    if is_text_content(content, filename):
+        if isinstance(content, bytes):
+            try:
+                content = content.decode('utf-8')
+            except UnicodeDecodeError:
+                # If decode fails, treat as binary
+                return create_file_part(
+                    name=filename,
+                    bytes_data=content,
+                    mime_type=mime_type or "application/octet-stream"
+                )
+        
+        return TextPart(
+            kind="text",
+            text=str(content),
+            metadata={"contentType": mime_type} if mime_type else None
+        )
+    
+    # Binary content
+    if not isinstance(content, bytes):
+        content = str(content).encode('utf-8')
+    
+    return create_file_part(
+        name=filename,
+        bytes_data=content,
+        mime_type=mime_type or "application/octet-stream"
+    )
