@@ -26,12 +26,15 @@ from a2a.types import (
     DataPart,
     Task,
     TaskStatus,
-    Message
+    Message,
+    MessageSendConfiguration,
+    Artifact
 )
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError, InvalidParamsError
 from utils.logging import get_logger
 from utils.message_utils import create_message_parts, create_agent_message, extract_content_from_parts
+from utils.configuration import ConfigurationProcessor, extract_message_history
 
 logger = logging.getLogger(__name__)
 
@@ -124,42 +127,69 @@ class A2AAgent(AgentExecutor, ABC):
             defaultOutputModes=["text/plain", "application/json"]
         )
     
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+        configuration: Optional[MessageSendConfiguration] = None
+    ) -> None:
         """
-        Execute agent logic - A2A compliant minimal implementation.
-        
+        Execute agent logic - A2A compliant implementation with configuration support.
+
         The A2A framework handles:
         - Task management
         - LLM integration
         - Tool orchestration
         - Streaming and artifacts
-        
-        We only extract the message, process it, and return the response.
-        
+        - Client configuration preferences (A2A v0.3.0)
+
+        We extract the message, process it with configuration filters, and return the response.
+
         Args:
             context: Request context with message and metadata
             event_queue: Queue for sending events/responses
+            configuration: Optional client configuration preferences
         """
         task = None
+        config_processor = None
+
         try:
+            # Initialize configuration processor
+            config_processor = ConfigurationProcessor(configuration)
+
+            # Validate configuration
+            validation_issues = config_processor.validate_configuration()
+            if validation_issues:
+                for issue in validation_issues:
+                    self.logger.warning(f"Configuration issue: {issue}")
+
             # Extract message from A2A protocol format
             message = self._extract_message(context)
-            
+
             if not message:
                 raise InvalidParamsError("No message provided in request")
-            
+
             # Get or create task for proper lifecycle management
             task = context.current_task
             if not task:
                 task = new_task(context.message or new_agent_text_message("Processing..."))
                 await event_queue.enqueue_event(task)
-            
+
             self._current_task_id = task.id
-            
+
             # Create TaskUpdater for status updates (spec-compliant)
             # Use contextId (camelCase) per spec
             context_id = getattr(task, "contextId", None) or getattr(task, "context_id", None) or task.id
             updater = TaskUpdater(event_queue, task.id, context_id)
+
+            # Handle history length if requested
+            if config_processor.should_include_history():
+                history_length = config_processor.get_history_length()
+                history = extract_message_history(context, history_length)
+                if history:
+                    self.logger.debug(f"Including {len(history)} historical messages")
+                    # Store history in context for agent to use if needed
+                    context.message_history = history
             
             # Signal task is being worked on (spec state: "working")
             await updater.update_status(
@@ -171,10 +201,17 @@ class A2AAgent(AgentExecutor, ABC):
             if os.getenv("SHOW_AGENT_CALLS", "false").lower() == "true":
                 self.logger.info(f"📨 {self.get_agent_name()}: Processing message ({len(message)} chars)")
             
+            # Handle blocking mode with timeout
+            if config_processor.is_blocking_mode():
+                timeout = config_processor.get_blocking_timeout()
+                self.logger.debug(f"Blocking mode enabled with timeout: {timeout}s")
+                # For now, we'll process synchronously (already the default)
+                # Future: Add actual timeout handling with asyncio.wait_for
+
             # Process message through agent's business logic
             # This is where agents implement their specific functionality
             response = await self.process_message(message)
-            
+
             # Create artifact for the agent's output (not a message!)
             # Per A2A spec: Artifacts are outputs/results, Messages are communication
             if isinstance(response, (dict, list)):
@@ -183,23 +220,58 @@ class A2AAgent(AgentExecutor, ABC):
             else:
                 # String responses use TextPart
                 parts = [TextPart(kind="text", text=str(response))]
-            
+
+            # Apply output mode filtering if configured
+            if config_processor and config_processor.configuration.accepted_output_modes:
+                filtered_parts = config_processor.filter_artifact_parts(parts)
+                if not filtered_parts:
+                    # No parts match accepted modes - provide error feedback
+                    self.logger.warning(f"No artifact parts match accepted modes: {config_processor.configuration.accepted_output_modes}")
+                    parts = [TextPart(
+                        kind="text",
+                        text="No output available in requested format",
+                        metadata={"contentType": "text/plain"}
+                    )]
+                else:
+                    parts = filtered_parts
+
             # Add artifact to the task
             # Artifacts represent the tangible outputs generated by the agent
+            artifact_metadata = {
+                "agent": self.get_agent_name(),
+                "timestamp": time.time()
+            }
+
+            # Add configuration metadata if present
+            if config_processor:
+                artifact_metadata["configuration_applied"] = {
+                    "accepted_output_modes": config_processor.configuration.accepted_output_modes,
+                    "blocking": config_processor.configuration.blocking,
+                    "history_length": config_processor.configuration.history_length
+                }
+
             await updater.add_artifact(
                 parts=parts,
                 artifact_id=f"result-{task.id}",
                 name=f"{self.get_agent_name()} Result",
-                metadata={
-                    "agent": self.get_agent_name(),
-                    "timestamp": time.time()
-                }
+                metadata=artifact_metadata
             )
-            
+
+            # Handle push notifications if configured
+            if config_processor and config_processor.has_push_notifications():
+                push_config = config_processor.get_push_config()
+                self.logger.info(f"Push notifications configured: {push_config}")
+                # Future: Implement actual push notification logic
+                # This would schedule async webhooks to the client
+
             # Mark task as completed (without a message, artifacts are the output)
+            completion_message = "Task completed. Generated 1 artifact."
+            if config_processor and config_processor.configuration.accepted_output_modes:
+                completion_message += f" Filtered for: {', '.join(config_processor.configuration.accepted_output_modes)}"
+
             await updater.update_status(
                 TaskState.completed,
-                new_agent_text_message(f"Task completed. Generated 1 artifact.")
+                new_agent_text_message(completion_message)
             )
             
         except ServerError as e:

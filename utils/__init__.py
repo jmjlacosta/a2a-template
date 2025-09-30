@@ -4,36 +4,42 @@ Phase 1 refactoring - reduced from 2600+ to ~420 LOC with enhanced features.
 """
 
 from .registry import load_registry, resolve_agent_url, clear_cache
-from .a2a_client import A2AClient, call_agent
+# from .a2a_client import A2AClient, call_agent  # Module not present
 from .llm_utils import LLMProvider, generate_text, generate_json, create_llm_agent
 from .logging import setup_logging, get_logger, reset_logging
+from .configuration import ConfigurationProcessor, extract_message_history, create_default_configuration
 
 # Legacy aliases for backward compatibility
-A2AAgentClient = A2AClient  # Old name -> new name
+# A2AAgentClient = A2AClient  # Old name -> new name
 AgentRegistry = None  # No longer needed with JSON-RPC
 
 __all__ = [
     # Registry functions
     "load_registry",
-    "resolve_agent_url", 
+    "resolve_agent_url",
     "clear_cache",
-    
-    # A2A client
-    "A2AClient",
-    "A2AAgentClient",  # Legacy name
+
+    # A2A client (commented out - module missing)
+    # "A2AClient",
+    # "A2AAgentClient",  # Legacy name
     "AgentRegistry",   # Legacy compatibility
-    "call_agent",
-    
+    # "call_agent",
+
     # LLM utilities
     "LLMProvider",
     "generate_text",
     "generate_json",
     "create_llm_agent",
-    
+
     # Logging
     "setup_logging",
     "get_logger",
-    "reset_logging"
+    "reset_logging",
+
+    # Configuration (Phase 2)
+    "ConfigurationProcessor",
+    "extract_message_history",
+    "create_default_configuration"
 ]
 
 __version__ = "2.0.0"
